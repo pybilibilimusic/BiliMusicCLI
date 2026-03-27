@@ -19,6 +19,7 @@ class Config:
             'mp3': './mp3'
         }
         self.config['timeout'] = {'timeout': '5'}
+        self.config['threads'] = {'threads': '4'}
 
     def setup_directories(self):
         dirs = [
@@ -77,6 +78,8 @@ class Config:
                 print("Video file storage location:./video_temp,")
                 print("MP3 file storage location:./mp3,")
                 print("Timeout:5")
+                print("Downloading Threads:4")
+
                 use_default = self.inquiry(context="Please choose(Y or N):", valid_value=["Y", "y", "N", "n"],
                                            default="Y", target_type=str)
                 if use_default.lower() == "y":
@@ -108,6 +111,13 @@ class Config:
                     valid_value=range(1, 11),
                     target_type=int)
                 self.config['timeout'] = {'timeout': str(timeout)}
+
+                threads = self.inquiry(context='Please enter the number of threads when downloading (default:4),'
+                             '\nThe available range is 1 to 10 seconds.'
+                             'Note: It is not recommended to have more than 5 threads, otherwise it may put a burden on the hard drive.',
+                    valid_value=range(1, 10),
+                    target_type=int)
+                self.config['threads'] = {'threads': str(threads)}
 
                 print("Initialization complete.")
                 self.config['first_run'] = {'first_run': '1'}
