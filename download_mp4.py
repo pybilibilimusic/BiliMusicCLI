@@ -1,108 +1,119 @@
-import urllib3
-import requests
 import re
-from generate_params import generate_wrid
-import downloading
+
+import requests
+
 import config
+import downloading
+from generate_params import generate_wrid
 
-class download_mp4:
+
+def downloadMP4(aid: str, cid: str, title: str) -> None:
+    """
+    Download the MP4 video using the play URL.
+
+    Args:
+        aid (str): Video aid.
+        cid (str): Content ID.
+        title (str): Video title (used as filename).
+    """
+    # Build parameters for WBI signature
+    params = {"aid": aid, "cid": cid}
+    w_rid, wts = generate_wrid(params)
+
+    # Construct the play URL request
+    play_url = (
+        f"https://api.bilibili.com/x/player/wbi/playurl"
+        f"?avid={aid}&cid={cid}&qn=16&type=mp4&platform=html5"
+        f"&fnver=0&fnval=16&aid={aid}&web_location=1315877"
+        f"&w_rid={w_rid}&wts={wts}"
+    )
+
+    resp = requests.get(play_url, headers=config.headers, verify=False)
+    resp.raise_for_status()
+    response = resp.json()
+
+    # Extract the first video segment URL
+    video_url = response['data']['durl'][0]['url']
+
+    # Sanitize filename and download
+    safe_filename = config.normalize_filename(filename=title)
+    downloading.download(video_url, threads=4, filename=f"{safe_filename}.mp4")
+
+
+class DownloadMP4:
+    """
+    A class to download Bilibili videos in MP4 format.
+    """
+
     def __init__(self):
-        self.api_url = f"https://api.bilibili.com/x/web-interface/view?bvid="
-        self.pattern = r"(?:BV|av|AV)[0-9A-Za-z]{10,}"
+        """Initialize the downloader"""
+        self.api_url = "https://api.bilibili.com/x/web-interface/view?bvid="
+        self.bv_av_pattern = r"(?:BV|av|AV)[0-9A-Za-z]{10,}"
 
-    def get_video_id(self,bilibili_url):
-        """Extract AV or BV string from bilibili link using regular expressions.
+    def _get_video_id(self, bilibili_url: str):
+        """
+        Extract AV or BV identifier from a Bilibili URL.
 
         Args:
-            bilibili_url (str) :The bilibili url to be extracted
+            bilibili_url (str): The Bilibili video URL.
 
         Returns:
-            The AV or BV string in bilibili link.
-
-        Raises:
-            None
+            str: The extracted AV or BV string.
         """
 
-        match = re.search(self.pattern, bilibili_url)
-        return match.group(0)
+        try:
+            match = re.search(self.bv_av_pattern, bilibili_url)
+            return match.group(0)
+        except AttributeError:
+            print("No valid BV/AV pattern found in the URL.")
 
-    def get_video_information(self,video_id):
-        """Get some specific args.
+    def _get_video_information(self, video_id: str):
+        """
+        Fetch video metadata from the Bilibili API.
 
         Args:
-            video_id (str) :The bilibili url.
+            video_id (str): BV or AV identifier of the video.
 
         Returns:
-            aid,cid (str) :The specific args of this video.
-            title (str) :The title of this video.
-            pic (str) :The cover of this video.
-        Raises:
-            None
+            tuple: (aid, pic, title, cid)
+                - aid (str): Video aid (For internal program use only).
+                - pic (str): Cover image URL (Interface for later development).
+                - title (str): Video title (For internal program use only).
+                - cid (str): Content ID (For internal program use only).
         """
+
         api_url = self.api_url + video_id
-        json_data = requests.get(api_url, headers=config.headers,verify=False).json()
-        aid = json_data['data']['aid']
-        pic = json_data['data']['pic']
-        title = json_data['data']['title']
-        cid = json_data['data']['cid']
-        return aid,pic,title,cid
+        json_data = requests.get(api_url, headers=config.headers, verify=False).json()
+        data = json_data['data']
+        aid = data['aid']
+        pic = data['pic']
+        title = data['title']
+        cid = data['cid']
+        return aid, pic, title, cid
 
-    def get_mp4(self,aid,cid,title):
-        """?????
-        Get some specific args.
+    def download_video(self, bilibili_url: str) -> str:
+        """
+        Main entry point: download the video from a Bilibili URL.
 
         Args:
-            aid (str) :The specific args of this video.
-            cid (str) :The specific args of this video.
-            title (str) :The title of this video,will be used as file name.
+            bilibili_url (str): The full Bilibili video URL.
 
         Returns:
-            None
-        Raises:
-            None
+            str: The title of the downloaded video.
         """
-        params = {"aid": aid, "cid": cid}
-        w_rid, wts = generate_wrid(params)
-        get_video_link = f"https://api.bilibili.com/x/player/wbi/playurl?avid={aid}&cid={cid}&qn=16&type=mp4&platform=html5&fnver=0&fnval=16&aid={aid}&web_location=1315877&w_rid={w_rid}&wts={wts}".format(aid=aid, cid=cid, w_rid=w_rid, wts=wts)
-        response = requests.get(get_video_link, headers=config.headers, verify=False).json()
-        response.raise_for_status()
-        video_url = response['data']['durl'][0]['url']
-        video_name = config.normalize_filename(filename = title)
-    #    logging.info(f"经处理后的文件名：{video_name},开始下载视频")
+        # Suppress insecure request warnings (requests version)
+        requests.packages.urllib3.disable_warnings()
 
-        downloading.download(video_url,f"{video_name}.mp4")
-    #    logging.info(f"视频{video_name}下载完成！")
+        video_id = self._get_video_id(bilibili_url)
+        aid, pic, title, cid = self._get_video_information(video_id)
 
-    def download_video(self,bilibili_url):
-        """The main function,which achieve the downloading of the designated video
-        Args:
-            bilibili_url (str) :The bilibili url.
-
-        Returns:
-            None
-
-        Raises:
-            None
-        """
-        # log_dir = Path("./log")
-        # log_dir.mkdir(exist_ok=True)
-        # log_path = log_dir / "{}.log".format(str(time.time()))
-        # logging.basicConfig(level=logging.INFO,
-        #                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        #                     datefmt="%Y-%m-%d %H:%M:%S",
-        #                     filename=log_path)
-        video_id = self.get_video_id(bilibili_url)
-        #logging.info(f"获取视频AV/BV号：{video_id}")
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        aid, pic, title, cid = self.get_video_information(video_id)
-        #logging.info(f"获取视频的aid：{aid},cid:{cid},标题：{title},封面地址：{pic}")
-        #temp_dir = Path("./temp")
-        #temp_dir.mkdir(exist_ok=True)
-        self.get_mp4(aid, cid, title)
+        downloadMP4(aid, cid, title)
         return title
 
+
 if __name__ == '__main__':
-    """The test code"""
-    url = input("请输入Bilibili视频链接:")
-    downloader = download_mp4()
+    """Test the downloader with user input."""
+
+    url = input("Please enter the Bilibili video URL: ")
+    downloader = DownloadMP4()
     downloader.download_video(bilibili_url=url)
