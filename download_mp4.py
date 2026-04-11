@@ -1,119 +1,122 @@
 import re
-
+import time
+import json
+import hashlib
 import requests
+from urllib.parse import urlparse, parse_qs
 
 import config
 import downloading
-from generate_params import generate_wrid
 
-
-def downloadMP4(aid: str, cid: str, title: str) -> None:
-    """
-    Download the MP4 video using the play URL.
-
-    Args:
-        aid (str): Video aid.
-        cid (str): Content ID.
-        title (str): Video title (used as filename).
-    """
-    # Build parameters for WBI signature
-    params = {"aid": aid, "cid": cid}
-    w_rid, wts = generate_wrid(params)
-
-    # Construct the play URL request
-    play_url = (
-        f"https://api.bilibili.com/x/player/wbi/playurl"
-        f"?avid={aid}&cid={cid}&qn=16&type=mp4&platform=html5"
-        f"&fnver=0&fnval=16&aid={aid}&web_location=1315877"
-        f"&w_rid={w_rid}&wts={wts}"
-    )
-
-    resp = requests.get(play_url, headers=config.headers, verify=False)
-    resp.raise_for_status()
-    response = resp.json()
-
-    # Extract the first video segment URL
-    video_url = response['data']['durl'][0]['url']
-
-    # Sanitize filename and download
-    safe_filename = config.normalize_filename(filename=title)
-    downloading.download(video_url, threads=4, filename=f"{safe_filename}.mp4")
-
-
-class DownloadMP4:
-    """
-    A class to download Bilibili videos in MP4 format.
-    """
+class DownloadAudio:
+    """Main class for downloading audio from Bilibili videos."""
 
     def __init__(self):
-        """Initialize the downloader"""
-        self.api_url = "https://api.bilibili.com/x/web-interface/view?bvid="
-        self.bv_av_pattern = r"(?:BV|av|AV)[0-9A-Za-z]{10,}"
+        # WBI signature keys (static for now)
+        self.img_key = '7cd084941338484aae1ad9425b84077c'
+        self.sub_key = '4932caff0ff746eab6f01bf08b70ac45'
+        self.play_url = "https://api.bilibili.com/x/player/playurl"
 
-    def _get_video_id(self, bilibili_url: str):
+    def wbi_sign(self, aid, cid):
         """
-        Extract AV or BV identifier from a Bilibili URL.
+        Generate WBI signature (w_rid) for the given aid and cid.
 
         Args:
-            bilibili_url (str): The Bilibili video URL.
+            aid (int): Video aid.
+            cid (int): Content ID of the specific part.
 
         Returns:
-            str: The extracted AV or BV string.
+            dict: Parameters including the generated 'w_rid' signature.
         """
+        params = {
+            "avid": aid,
+            "cid": cid,
+            "fnval": 4048,
+            "mid": 0,
+            "platform": "pc",
+            "qn": 30280,
+            "wts": int(time.time()),
+        }
+        # Sort parameters alphabetically as required by WBI signature
+        sorted_params = sorted(params.items())
+        query = '&'.join([f"{k}={v}" for k, v in sorted_params])
+        sign_str = query + self.img_key + self.sub_key
+        params["w_rid"] = hashlib.md5(sign_str.encode()).hexdigest()
+        return params
 
-        try:
-            match = re.search(self.bv_av_pattern, bilibili_url)
-            return match.group(0)
-        except AttributeError:
-            print("No valid BV/AV pattern found in the URL.")
-
-    def _get_video_information(self, video_id: str):
+    def get_audio_url(self, aid, cid):
         """
-        Fetch video metadata from the Bilibili API.
+        Request the Bilibili API to obtain the direct audio stream URL.
 
         Args:
-            video_id (str): BV or AV identifier of the video.
+            aid (int): Video aid.
+            cid (int): Content ID.
 
         Returns:
-            tuple: (aid, pic, title, cid)
-                - aid (str): Video aid (For internal program use only).
-                - pic (str): Cover image URL (Interface for later development).
-                - title (str): Video title (For internal program use only).
-                - cid (str): Content ID (For internal program use only).
+            str: Direct audio stream URL (baseUrl of the first audio stream).
         """
+        params = self.wbi_sign(aid, cid)
+        resp = requests.get(self.play_url, params=params, headers=config.headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        audio_list = data.get("data", {}).get("dash", {}).get("audio", [])
+        if not audio_list:
+            raise Exception("No audio stream found in API response")
+        return audio_list[0].get("baseUrl")
 
-        api_url = self.api_url + video_id
-        json_data = requests.get(api_url, headers=config.headers, verify=False).json()
-        data = json_data['data']
-        aid = data['aid']
-        pic = data['pic']
-        title = data['title']
-        cid = data['cid']
-        return aid, pic, title, cid
-
-    def download_video(self, bilibili_url: str) -> str:
+    def download_video(self, video_url, threads=8):
         """
-        Main entry point: download the video from a Bilibili URL.
+        Parse the video page, retrieve audio URL, and download the audio file.
+        Supports multi-part videos (e.g., ?p=5) by selecting the correct part.
 
         Args:
-            bilibili_url (str): The full Bilibili video URL.
-
-        Returns:
-            str: The title of the downloaded video.
+            video_url (str): Full Bilibili video URL.
+            threads (int, optional): Number of download threads. Defaults to 8.
         """
-        # Suppress insecure request warnings (requests version)
-        requests.packages.urllib3.disable_warnings()
+        page_html = requests.get(video_url, headers=config.headers).text
 
-        video_id = self._get_video_id(bilibili_url)
-        aid, pic, title, cid = self._get_video_information(video_id)
+        # Extract __INITIAL_STATE__ JSON from page
+        match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', page_html, re.S)
+        if not match:
+            raise Exception("Could not find __INITIAL_STATE__ in page")
+        data = json.loads(match.group(1))
+        video_data = data.get('videoData', {})
+        aid = video_data.get('aid')
+        if not aid:
+            raise Exception("aid not found in videoData")
 
-        downloadMP4(aid, cid, title)
-        return title
+        # Handle multi-part videos
+        pages = video_data.get('pages', [])
+        if pages:
+            parsed = urlparse(video_url)
+            query_params = parse_qs(parsed.query)
+            p_str = query_params.get('p', ['1'])[0]
+            try:
+                p = int(p_str)
+            except ValueError:
+                p = 1
+            p = max(1, min(p, len(pages)))  # clamp to valid range
+            cid = pages[p - 1].get('cid')
+            part_title = pages[p - 1].get('part', '')
+        else:
+            cid = video_data.get('cid')
+            part_title = ''
+
+        audio_url = self.get_audio_url(aid, cid)
+
+        # Build filename: video title + optional part title
+        video_title = video_data.get('title', '未命名')
+        if part_title:
+            base_name = f"{video_title} _ {part_title}"
+        else:
+            base_name = video_title
+        filename = config.normalize_filename(base_name)
+
+        downloading.download(audio_url, threads=threads, filename=f"{filename}.m4s")
 
 
-if __name__ == '__main__':
-    """Test the downloader with user input."""
-
-    url = input("Please enter the Bilibili video URL: ")
-    downloader = DownloadMP4()
-    downloader.download_video(bilibili_url=url)
+if __name__ == "__main__":
+    """The test code"""
+    url = input("Please enter the url of your video: ")
+    downloader = DownloadAudio()
+    downloader.download_video(url, threads=8)
