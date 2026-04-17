@@ -12,12 +12,33 @@ class DownloadAudio:
     """Main class for downloading audio from Bilibili videos."""
 
     def __init__(self):
-        # WBI signature keys (static for now)
         self.img_key = '7cd084941338484aae1ad9425b84077c'
         self.sub_key = '4932caff0ff746eab6f01bf08b70ac45'
         self.play_url = "https://api.bilibili.com/x/player/playurl"
+        self.api_url = "https://api.bilibili.com/x/web-interface/view?bvid="
+        self.bv_av_pattern = r"(?:BV|av|AV)[0-9A-Za-z]{10,}"
 
-    def wbi_sign(self, aid, cid):
+    def _get_video_information(self, video_id: str):
+        """
+        Fetch video metadata from the Bilibili API.
+
+        Args:
+            video_id (str): BV or AV identifier of the video.
+
+        Returns:
+            tuple: (aid, pic, title, cid)
+                - aid (str): Video aid (For internal program use only).
+                - pic (str): Cover image URL (Interface for later development).
+                - title (str): Video title (For internal program use only).
+                - cid (str): Content ID (For internal program use only).
+        """
+        api_url = self.api_url + video_id
+        json_data = requests.get(api_url, headers=config.headers, verify=False).json()
+        data = json_data['data']
+        aid,cid,title,pages = data['aid'],data['cid'],data['title'],data['pages']
+        return aid,cid,title,pages
+
+    def _wbi_sign(self, aid, cid):
         """
         Generate WBI signature (w_rid) for the given aid and cid.
 
@@ -55,7 +76,7 @@ class DownloadAudio:
         Returns:
             str: Direct audio stream URL (baseUrl of the first audio stream).
         """
-        params = self.wbi_sign(aid, cid)
+        params = self._wbi_sign(aid, cid)
         resp = requests.get(self.play_url, params=params, headers=config.headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
@@ -75,42 +96,34 @@ class DownloadAudio:
         """
         page_html = requests.get(video_url, headers=config.headers).text
 
-        # Extract __INITIAL_STATE__ JSON from page
-        match = re.search(r'window\.__INITIAL_STATE__\s*=\s*({.*?});', page_html, re.S)
-        if not match:
-            raise Exception("Could not find __INITIAL_STATE__ in page")
-        data = json.loads(match.group(1))
-        video_data = data.get('videoData', {})
-        aid = video_data.get('aid')
-        if not aid:
-            raise Exception("aid not found in videoData")
+        match = re.search(self.bv_av_pattern, video_url)
+        video_id = match.group(0)
+        aid,first_cid,title,pages = self._get_video_information(video_id)
 
-        # Handle multi-part videos
-        pages = video_data.get('pages', [])
-        if pages:
-            parsed = urlparse(video_url)
-            query_params = parse_qs(parsed.query)
-            p_str = query_params.get('p', ['1'])[0]
-            try:
-                p = int(p_str)
-            except ValueError:
-                p = 1
-            p = max(1, min(p, len(pages)))  # clamp to valid range
+        # Determine correct cid and part title for multi-part videos
+        parsed = urlparse(video_url)
+        query_params = parse_qs(parsed.query)
+        p_str = query_params.get('p', ['1'])[0]
+        try:
+            p = int(p_str)
+        except ValueError:
+            p = 1
+        if pages and 1 <= p <= len(pages):
             cid = pages[p - 1].get('cid')
             part_title = pages[p - 1].get('part', '')
         else:
-            cid = video_data.get('cid')
+            cid = first_cid
             part_title = ''
 
+        # Get audio stream URL
         audio_url = self.get_audio_url(aid, cid)
 
         # Build filename: video title + optional part title
-        video_title = video_data.get('title', '未命名')
         if part_title:
-            base_name = f"{video_title} _ {part_title}"
+            filename = f"{title} _ {part_title}"
         else:
-            base_name = video_title
-        filename = config.normalize_filename(base_name)
+            filename = title
+        filename = config.normalize_filename(filename)
 
         downloading.download(audio_url, threads=threads, filename=f"{filename}.m4s")
 
