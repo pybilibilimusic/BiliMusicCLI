@@ -131,7 +131,7 @@ class Config:
 
                 # Select temporary file save location
                 temporary_save_location = self.ask_folder(context="temporary", default="./temp")
-                self.config['temporary_save_location'] = {'temporary_save_location': temporary_save_location}
+                self.config['paths']['temporary_save_location'] = temporary_save_location
 
                 # Select m4s temp directory (m4s_temp)
                 m4s_temp = self.ask_folder(context="m4s", default="./m4s_temp")
