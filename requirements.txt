@@ -1,0 +1,13 @@
+requests>=2.25.0
+beautifulsoup4>=4.9.0
+curl_cffi>=0.5.0
+python-mpv>=1.0.0
+pyaudio>=0.2.11
+numpy>=1.21.0
+
+torch>=2.0.0
+silero-vad>=5.0
+funasr>=1.0.0
+modelscope>=1.10.0
+
+pyreadline3>=3.4.0; sys_platform == 'win32'
