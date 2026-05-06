@@ -1,21 +1,25 @@
 import sys
 import time
-
+from urllib.parse import quote
 import select
 from bs4 import BeautifulSoup
 import requests
 import re
 import config
 
-class Song_Search:
-    def __init__(self):
+class SongSearch:
+    def __init__(self,prompt,timeout):
         self.keyword_url = 'https://search.bilibili.com/all?keyword='
         self.video_id_pattern = r'href="//www\.bilibili\.com/video/([^/]+)/'
         self.title_pattern = r'title="(.*?)">'
         self.blacklist_word = ["纯享","循环"]
+        self.high_quality_keywords = ["Hi-Res无损", "录音棚", "官方", "母带", "24bit", "无损音质"]
 
-    def search(self,prompt):
-        search_url = self.keyword_url + prompt
+        self.prompt = quote(prompt)
+        self.timeout = timeout
+
+    def _search(self):
+        search_url = self.keyword_url + self.prompt
         response = requests.get(url = search_url,headers=config.headers)
         search_html = BeautifulSoup(response.text,'html.parser')
         search_list = str(search_html.find_all('div', class_='bili-video-card__info--right'))
@@ -25,22 +29,37 @@ class Song_Search:
         final_video_id = video_id[0:5]
         return final_video_title,final_video_id
 
-    def filter_video(self, prompt,timeout=10):
+    def _get_priority_score(self, title):
+        score = 0
+        for kw in self.high_quality_keywords:
+            if kw in title:
+                score += 10  # 每个关键词加10分
+        # 黑名单词减分
+        for bw in self.blacklist_word:
+            if bw in title:
+                score -= 5
+        return score
+
+    def _filter_video(self):
         """Get user input for song name and search for matching videos。"""
         print("Please wait a moment, searching...")
-        encoded_prompt = requests.utils.quote(prompt)  # URL encode the search query
-        video_title, video_id = self.search(encoded_prompt)
+        video_title, video_id = self._search()
         # Find the best result (avoid "循环" and "纯享" versions)
         best_index = 0
+        best_score = -1
+        flag = True
 
         for i in range(5):
             current_title = video_title[i]
             print(str(i + 1) + "." + current_title)
-            if self.blacklist_word not in current_title:
+            score = self._get_priority_score(current_title)
+            if score > best_score:
+                best_score = score
                 best_index = i
-                break
+        if best_score == -1:
+            best_index = 0
 
-        print(f"Please enter a number to make a selection. If no selection is made, the optimal result will be automatically chosen after {timeout} seconds...")
+        print(f"Please enter a number to make a selection. If no selection is made, the optimal result will be automatically chosen after {self.timeout} seconds...")
         print(f"The best result is: {best_index + 1}.{video_title[best_index]}")
 
         user_choice = -1
@@ -50,7 +69,7 @@ class Song_Search:
         sys.stdout.flush()
 
         # Wait for user input with certain timeout
-        while time.time() - start_time < timeout:
+        while time.time() - start_time < self.timeout:
             if sys.platform == "win32":
                 # Windows platform input handling
                 try:
@@ -89,7 +108,7 @@ class Song_Search:
                         sys.stdout.flush()
 
             # Update remaining time display
-            remaining = timeout - int(time.time() - start_time)
+            remaining = self.timeout - int(time.time() - start_time)
             sys.stdout.write(f"\rRemaining time: {remaining} seconds | Please choose (1-5): ")
             sys.stdout.flush()
 
@@ -105,9 +124,25 @@ class Song_Search:
 
         return video_id[final_choice], video_title[final_choice]
 
-if __name__ == "__main__":
-    prompt = input("Test code only:please enter the video title you want to search for:")
-    song_search = Song_Search()
-    video_title,video_id = song_search.filter_video(prompt,timeout=3)
-    print(video_title)
-    print(video_id)
+    def search(self):
+        video_titles, video_ids = self._search()
+        if not video_ids:
+            return None, None, []
+
+        best_index = 0
+        best_score = -1
+        for i in range(len(video_titles)):
+            score = self._get_priority_score(video_titles[i])
+            if score > best_score:
+                best_score = score
+                best_index = i
+        if best_score == -1:
+            best_index = 0
+
+        best_id = video_ids[best_index]
+        best_title = video_titles[best_index]
+
+        full_list = []
+        for i in range(len(video_ids)):
+            full_list.append({'bvid': video_ids[i], 'title': video_titles[i]})
+        return best_id, best_title, full_list

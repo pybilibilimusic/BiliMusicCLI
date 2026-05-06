@@ -3,17 +3,22 @@ from tkinter import filedialog
 # noinspection PyUnresolvedReferences
 import ctypes
 
-# noinspection PyBroadException
-def select_file(title="请选择文件", filetypes=None):
+def select(title="Please select a file:", filetypes=None,mode='file'):
     """
-    高清版文件选择器 - 解决tkinter模糊问题
+        Open a file/folder selection dialog using tkinter.
+
+        Args:
+            title: Dialog title.
+            filetypes: List of file type filters (e.g., [("Video", "*.mp4")]).
+            mode: 'file' for file selection, 'folder' for directory selection.
+
+        Returns:
+            Selected path as string, or None if cancelled/error.
     """
     try:
-        # ========== 关键DPI设置 ==========
-        # 告诉Windows这个程序是DPI感知的
         try:
             # Windows 8.1及以上
-            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # 系统DPI
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except:
             try:
                 # Windows 8及以下
@@ -21,17 +26,12 @@ def select_file(title="请选择文件", filetypes=None):
             except:
                 pass
 
-        # 创建主窗口
         root = tk.Tk()
         root.withdraw()
 
-        # ========== 高清字体设置 ==========
-        # 设置默认字体为系统清晰字体
         default_font = ("Microsoft YaHei UI", 9)  # Windows清晰字体
         root.option_add("*Font", default_font)
 
-        # ========== 窗口缩放设置 ==========
-        # 获取系统DPI缩放比例
         try:
             import ctypes
             from ctypes import wintypes
@@ -39,49 +39,40 @@ def select_file(title="请选择文件", filetypes=None):
             user32 = ctypes.windll.user32
             user32.SetProcessDPIAware()
 
-            # 获取屏幕DPI
             dc = user32.GetDC(0)
-            DPI_SCALEX = ctypes.windll.gdi32.GetDeviceCaps(dc, 88)  # LOGPIXELSX
-            DPI_SCALEY = ctypes.windll.gdi32.GetDeviceCaps(dc, 90)  # LOGPIXELSY
+            DPI_SCALEX = ctypes.windll.gdi32.GetDeviceCaps(dc, 88)
+            DPI_SCALEY = ctypes.windll.gdi32.GetDeviceCaps(dc, 90)
             user32.ReleaseDC(0, dc)
 
-            # 计算缩放比例（相对于96 DPI）
             scale_x = DPI_SCALEX / 96.0
-            scale_y = DPI_SCALEY / 96.0
 
-            # 调整窗口缩放
             root.tk.call('tk', 'scaling', scale_x)
         except:
-            # 如果获取DPI失败，使用默认值
             pass
 
-        # ========== 优化窗口显示 ==========
-        # 防止窗口被拉伸
         root.resizable(False, False)
 
-        # 设置窗口风格为现代化
         root.option_add('*Dialog.msg.font', default_font)
 
-        if filetypes is None:
-            filetypes = [
-            ("视频文件", "*.mp4 *.avi *.mkv *.mov *.wmv"),
-            ("MP4文件", "*.mp4"),
-            ("所有文件", "*.*")]
-
-        # 创建文件对话框
-        file_path = filedialog.askopenfilename(
-            title=title,
-            filetypes=filetypes
-        )
+        if mode == 'folder':
+            path = filedialog.askdirectory(title=title)
+        else:
+            if filetypes is None:
+                filetypes = [
+                    ("Video file", "*.mp4 *.avi *.mkv *.mov *.wmv"),
+                    ("Only MP4 file", "*.mp4"),
+                    ("All file", "*.*")]
+            path = filedialog.askopenfilename(
+                title=title,
+                filetypes=filetypes
+            )
 
         root.destroy()
 
-        return file_path
+        return path
 
     except Exception as e:
-        print(f"高清对话框创建失败: {e}")
-        # 回退到普通版本
         return None
 
 if __name__ == "__main__":
-    print(select_file())
+    print(select())

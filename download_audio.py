@@ -1,22 +1,27 @@
 import re
 import time
-import json
 import hashlib
 import requests
 from urllib.parse import urlparse, parse_qs
+from pathlib import Path
 
 import config
 import downloading
 
+
 class DownloadAudio:
     """Main class for downloading audio from Bilibili videos."""
 
-    def __init__(self):
+    def __init__(self, threads=4, temp_dir='./temp',m4s_temp='./m4s_temp'):
         self.img_key = '7cd084941338484aae1ad9425b84077c'
         self.sub_key = '4932caff0ff746eab6f01bf08b70ac45'
         self.play_url = "https://api.bilibili.com/x/player/playurl"
         self.api_url = "https://api.bilibili.com/x/web-interface/view?bvid="
-        self.bv_av_pattern = r"(?:BV|av|AV)[0-9A-Za-z]{10,}"
+        self.bv_av_pattern = r'(BV[a-zA-Z0-9]+)'
+
+        self.m4s_temp = Path(m4s_temp)
+        self.threads = threads
+        self.temp_dir = Path(temp_dir)
 
     def _get_video_information(self, video_id: str):
         """
@@ -85,17 +90,15 @@ class DownloadAudio:
             raise Exception("No audio stream found in API response")
         return audio_list[0].get("baseUrl")
 
-    def download_video(self, video_url, threads=8):
+    def download_audio(self, video_url):
         """
         Parse the video page, retrieve audio URL, and download the audio file.
         Supports multi-part videos (e.g., ?p=5) by selecting the correct part.
 
         Args:
             video_url (str): Full Bilibili video URL.
-            threads (int, optional): Number of download threads. Defaults to 8.
         """
-        page_html = requests.get(video_url, headers=config.headers).text
-
+        #Get aid,cid
         match = re.search(self.bv_av_pattern, video_url)
         video_id = match.group(0)
         aid,first_cid,title,pages = self._get_video_information(video_id)
@@ -119,17 +122,23 @@ class DownloadAudio:
         audio_url = self.get_audio_url(aid, cid)
 
         # Build filename: video title + optional part title
-        if part_title:
-            filename = f"{title} _ {part_title}"
+        if part_title and part_title != title:
+            filename = f"{title} - {part_title}"
         else:
             filename = title
         filename = config.normalize_filename(filename)
+        output_path = self.m4s_temp / f"{filename}.m4s"
 
-        downloading.download(audio_url, threads=threads, filename=f"{filename}.m4s")
+        config.headers["Referer"] = video_url
+        downloading.download(audio_url,
+                             threads=self.threads,
+                             output_path=output_path,
+                             resume=True)
+        return output_path
 
 
 if __name__ == "__main__":
     """The test code"""
     url = input("Please enter the url of your video: ")
-    downloader = DownloadAudio()
-    downloader.download_video(url, threads=8)
+    downloader = DownloadAudio(threads=16, temp_dir='./temp')
+    downloader.download_audio(url)
