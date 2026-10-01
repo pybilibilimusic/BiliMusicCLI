@@ -1,5 +1,3 @@
-import configparser
-import re
 from pathlib import Path
 
 headers = {
@@ -93,17 +91,16 @@ char_map = {
     '\u202F': ' ',
     '\u205F': ' ',
     '\u3000': ' ',
+    '𝐇𝐢-𝐑𝐞𝐬':'Hi-Res'
+}
+quality_map = {
+    '1080p': 80,
+    '720p': 64,
+    '480p': 32,
+    '360p': 16,
 }
 
 windows_illegal_chars = r'[<>:"/\\|?*\x00-\x1f]'
 
 temp_dir = Path("./temp")
 logging_path = Path("./log")
-
-def normalize_filename(filename):
-    for old_char, new_char in char_map.items():
-        filename = filename.replace(old_char, new_char)
-    filename = re.sub(windows_illegal_chars, "_",filename)
-    filename = re.sub(r'_+', '_', filename)
-    filename = filename.strip(' _.')
-    return filename

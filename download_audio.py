@@ -4,6 +4,11 @@ import hashlib
 import requests
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
+import urllib3
+
+import utils
+
+urllib3.disable_warnings()
 
 import config
 import downloading
@@ -41,7 +46,8 @@ class DownloadAudio:
         json_data = requests.get(api_url, headers=config.headers, verify=False).json()
         data = json_data['data']
         aid,cid,title,pages = data['aid'],data['cid'],data['title'],data['pages']
-        return aid,cid,title,pages
+        duration = data.get('duration', 0)
+        return aid,cid,title,pages,duration
 
     def _wbi_sign(self, aid, cid):
         """
@@ -101,7 +107,11 @@ class DownloadAudio:
         #Get aid,cid
         match = re.search(self.bv_av_pattern, video_url)
         video_id = match.group(0)
-        aid,first_cid,title,pages = self._get_video_information(video_id)
+        aid,first_cid,title,pages,duration = self._get_video_information(video_id)
+
+        MAX_DURATION = 900
+        if duration > MAX_DURATION:
+            raise Exception(f"Video duration {duration}s exceeds limit {MAX_DURATION}s, possibly a loop version.")
 
         # Determine correct cid and part title for multi-part videos
         parsed = urlparse(video_url)
@@ -126,7 +136,7 @@ class DownloadAudio:
             filename = f"{title} - {part_title}"
         else:
             filename = title
-        filename = config.normalize_filename(filename)
+        filename = utils.normalize_filename(filename)
         output_path = self.m4s_temp / f"{filename}.m4s"
 
         config.headers["Referer"] = video_url

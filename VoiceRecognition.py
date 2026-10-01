@@ -26,7 +26,8 @@ class VoiceRecognition:
                  callback_stop: Optional[Callable[[], None]] = None,
                  callback_resume: Optional[Callable[[], None]] = None,
                  callback_next: Optional[Callable[[], None]] = None,
-                 callback_pause: Optional[Callable[[], None]] = None):
+                 callback_pause: Optional[Callable[[], None]] = None,
+                 input_device_index=None):
         """
         Initialize voice recognition.
 
@@ -43,6 +44,7 @@ class VoiceRecognition:
             callback_resume: Called when resume keywords are detected.
             callback_next: Called when next-track keywords are detected.
             callback_pause: Called when pause keywords are detected.
+            input_device_index: Device index of input device (default -1).
         """
         self.wake_words = wake_words
         self.sample_rate = sample_rate
@@ -54,8 +56,9 @@ class VoiceRecognition:
         self.on_ready = on_ready
         self.callback_stop = callback_stop
         self.callback_resume = callback_resume
-        self.callback_pause = callback_pause
         self.callback_next = callback_next
+        self.callback_pause = callback_pause
+        self.input_device_index = input_device_index
 
         self._cleaned_up = False
         self._stop_flag = False
@@ -211,6 +214,7 @@ class VoiceRecognition:
             channels=1,
             rate=self.sample_rate,
             input=True,
+            input_device_index=self.input_device_index,
             frames_per_buffer=self.vad_chunk,
         )
 

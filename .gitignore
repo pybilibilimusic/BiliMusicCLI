@@ -1,6 +1,32 @@
+.git/
 .idea/
+.venv/
 __pycache__/
-log/
-python/
+bin/
+m4s_temp/
+mp3/
 temp/
 ffmpeg.exe
+config.ini
+main_GUI.py
+main_test.py
+microbit.py
+microbit_connecting.py
+song_cache.db
+windows.py
+windows.ui
+
+# --- 敏感信息：切勿提交登录凭据 ---
+bilibili_cookies.json
+
+# --- 运行时产物 ---
+log/
+*.log
+error.log
+qrcode.png
+test.png
+
+# --- 第三方二进制（体积大，不应入库） ---
+edge/
+*.exe
+*.dll

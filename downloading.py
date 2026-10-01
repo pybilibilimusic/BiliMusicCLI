@@ -232,7 +232,7 @@ def _original_download(url, output_path, chunk_size=8192):
     total_size = None
     # 尝试 HEAD 获取大小，失败则忽略
     try:
-        head_resp = requests.head(url, allow_redirects=True, headers=config.headers, impersonate="chrome")
+        head_resp = requests.head(url, allow_redirects=True, headers=config.headers)
         if head_resp.status_code == 200 and 'content-length' in head_resp.headers:
             total_size = int(head_resp.headers['content-length'])
     except Exception:
@@ -240,7 +240,7 @@ def _original_download(url, output_path, chunk_size=8192):
 
     try:
         # 发送 GET 请求（实际下载）
-        response = requests.get(url, stream=True, allow_redirects=True, headers=config.headers, impersonate="chrome")
+        response = requests.get(url, stream=True, allow_redirects=True, headers=config.headers)
         response.raise_for_status()
 
         # 如果 HEAD 未能获取大小，从 GET 响应头获取
