@@ -34,9 +34,17 @@ class CacheManager:
             return None
 
     def insert(self, bvid, title, file_path):
+        # 已存在时只更新标题/路径，保留播放次数与最近播放时间
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO song_cache (bvid, title, file_path, download_time) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                """
+                INSERT INTO song_cache (bvid, title, file_path, download_time)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(bvid) DO UPDATE SET
+                    title = excluded.title,
+                    file_path = excluded.file_path,
+                    download_time = CURRENT_TIMESTAMP
+                """,
                 (bvid, title, str(file_path))
             )
         self.cleanup()
@@ -52,11 +60,13 @@ class CacheManager:
         if max_entries is None:
             max_entries = self.MAX_ENTRIES
         with sqlite3.connect(self.db_path) as conn:
+            # 注意：未播放过的歌 last_play_time 为 NULL，直接按它排序会排到末尾
+            # （SQLite 中 NULL 最小，DESC 时垫底），导致刚下载的歌被优先删掉。
             conn.execute('''
                 DELETE FROM song_cache
                 WHERE bvid NOT IN (
                     SELECT bvid FROM song_cache
-                    ORDER BY last_play_time DESC
+                    ORDER BY COALESCE(last_play_time, download_time) DESC
                     LIMIT ?
                 )
             ''', (max_entries,))

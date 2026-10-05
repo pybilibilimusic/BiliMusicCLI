@@ -34,10 +34,18 @@ def setup_mpv_path():
         if not (base_dir / "libmpv-2.dll").exists():
             print("Warning: libmpv-2.dll not found, please put it in bin/ folder.")
 
+# 清洗后仍可能漏网的装饰符号，兜底删除，保证最终文件名干净
+RESIDUAL_SYMBOLS = "《》〈〉【】〖〗「」『』"
+
+
 def normalize_filename(filename):
+    """把标题转成合法且干净的文件名。"""
     for old_char, new_char in config.char_map.items():
         filename = filename.replace(old_char, new_char)
-    filename = re.sub(config.windows_illegal_chars, "_",filename)
+    # 兜底：删掉清洗阶段可能漏下的书名号 / 引号类符号
+    filename = re.sub("[" + RESIDUAL_SYMBOLS + "]", "", filename)
+    filename = re.sub(config.windows_illegal_chars, "_", filename)
     filename = re.sub(r'_+', '_', filename)
+    filename = re.sub(r'\s+', ' ', filename)
     filename = filename.strip(' _.')
     return filename

@@ -11,7 +11,7 @@ import requests
 
 import config
 import downloading
-from generate_params import generate_wrid
+from generate_params import sign_params
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -25,7 +25,17 @@ class VideoDownloader:
         self.ffmpeg_path = Path(ffmpeg_path)
         self.threads = threads
         self.cookie_dict = {}
-        self.headers = config.headers
+
+    def _headers(self, referer: str = None) -> dict:
+        """构造请求头（含 Cookie），返回副本，不污染全局 config.headers。"""
+        headers = dict(config.headers)
+        if self.cookie_dict:
+            headers["Cookie"] = "; ".join(
+                f"{name}={value}" for name, value in self.cookie_dict.items()
+            )
+        if referer:
+            headers["Referer"] = referer
+        return headers
 
     def load_cookies(self) -> bool:
         if not self.cookie_file.exists():
@@ -58,7 +68,7 @@ class VideoDownloader:
         api_url = f"https://api.bilibili.com/x/web-interface/view?bvid={video_id}"
         resp = requests.get(
             api_url,
-            headers=self.headers,
+            headers=self._headers(f"https://www.bilibili.com/video/{video_id}"),
             cookies=self.cookie_dict,
             verify=False,
             timeout=10
@@ -87,27 +97,32 @@ class VideoDownloader:
         Returns:
             dict: {'video': [...], 'audio': [...]}
         """
-        w_rid, wts = generate_wrid({'aid': aid, 'cid': cid})
-
-        url = (
-            f"https://api.bilibili.com/x/player/wbi/playurl?"
-            f"avid={aid}&cid={cid}&qn={quality}&fnval=4048&fnver=0"
-            f"&fourk=1&platform=pc"
-            f"&w_rid={w_rid}&wts={wts}"
-        )
-
-        headers = self.headers.copy()
-        headers['Referer'] = f"https://www.bilibili.com/video/av{aid}"
+        # 参与签名的参数必须与最终发送的参数完全一致，否则 w_rid 校验不通过
+        params = sign_params({
+            'avid': aid,
+            'cid': cid,
+            'qn': quality,
+            'fnval': 4048,
+            'fnver': 0,
+            'fourk': 1,
+            'platform': 'pc',
+        })
 
         resp = requests.get(
-            url,
-            headers=headers,
+            "https://api.bilibili.com/x/player/wbi/playurl",
+            params=params,
+            headers=self._headers(f"https://www.bilibili.com/video/av{aid}"),
             cookies=self.cookie_dict,
             verify=False,
             timeout=15
         )
         resp.raise_for_status()
-        data = resp.json().get('data', {})
+        payload = resp.json()
+        if payload.get('code') != 0:
+            raise RuntimeError(
+                f"playurl 接口返回异常: {payload.get('code')} {payload.get('message')}"
+            )
+        data = payload.get('data', {})
 
         dash = data.get('dash')
         if not dash:
@@ -167,14 +182,13 @@ class VideoDownloader:
         print("=" * 60)
         print(f"开始下载{label} → {output_path.name}")
 
-        # 让 downloading 模块使用带 Cookie 的 headers
-        config.headers.update(self.headers)
-
+        # Cookie 与 Referer 必须随下载请求一起发出，否则 CDN 只给低码率流
         downloading.download(
             url,
             output_path=output_path,
             threads=self.threads,
-            resume=True
+            resume=True,
+            headers=self._headers("https://www.bilibili.com/")
         )
 
     def _merge_streams(self, video_path: Path, audio_path: Path,
@@ -290,9 +304,3 @@ if __name__ == '__main__':
     downloader = VideoDownloader()
     result = downloader.download(url)
     print(f"\n最终输出：{result}")
-'''    
-with open('bilibili_cookies.json', 'r', encoding='utf-8') as f:
-    cookie_dict = json.load(f)
-
-resp = requests.get(url, headers=headers, cookies=cookie_dict)
-'''

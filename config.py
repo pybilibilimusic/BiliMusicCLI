@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 headers = {
@@ -27,16 +28,21 @@ char_map = {
     '？': '?',
     '（': '(',
     '）': ')',
-    '【': '[',
-    '】': ']',
-    '《': '<',
-    '》': '>',
+    # 书名号 / 引号类：这些是标题装饰符号，清洗后不应出现在文件名里，直接删除
+    '《': '',
+    '》': '',
+    '〈': '',
+    '〉': '',
+    '【': '',
+    '】': '',
+    '〖': '',
+    '〗': '',
+    '「': '',
+    '」': '',
+    '『': '',
+    '』': '',
     '·': '.',
     '‧': '.',
-    '「': '[',
-    '」': ']',
-    '『': '[',
-    '』': ']',
     '﹑': ',',
     '﹔': ';',
     '﹕': ':',
@@ -104,3 +110,41 @@ windows_illegal_chars = r'[<>:"/\\|?*\x00-\x1f]'
 
 temp_dir = Path("./temp")
 logging_path = Path("./log")
+
+# Cookie 文件（扫码登录后生成，已被 .gitignore 忽略，切勿提交）
+cookie_path = Path("bilibili_cookies.json")
+
+
+def load_cookie_dict(path=None) -> dict:
+    """
+    读取本地 Cookie 文件，返回 {name: value}。
+
+    兼容两种格式：浏览器导出的列表形式，以及简单的键值字典。
+    文件不存在或损坏时返回空字典（未登录状态下程序仍可下载低码率流）。
+    """
+    cookie_file = Path(path) if path else cookie_path
+    if not cookie_file.exists():
+        return {}
+    try:
+        with open(cookie_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+
+    if isinstance(data, dict):
+        return {str(k): str(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return {
+            str(item.get("name")): str(item.get("value"))
+            for item in data
+            if item.get("name")
+        }
+    return {}
+
+
+def cookie_header(path=None) -> dict:
+    """把 Cookie 文件转成请求头；没有 Cookie 时返回空字典。"""
+    cookies = load_cookie_dict(path)
+    if not cookies:
+        return {}
+    return {"Cookie": "; ".join(f"{name}={value}" for name, value in cookies.items())}

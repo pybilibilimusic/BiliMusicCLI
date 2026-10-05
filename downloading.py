@@ -11,7 +11,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 class DownloadManager:
     """Download manager supporting resumable downloads and multi-threading"""
 
-    def __init__(self, url, output_path, chunk_size=8192, threads=4, resume=False, temp_dir='./temp'):
+    # 单个分片的最小字节数：避免小文件被切成大量空分片
+    MIN_PART_SIZE = 256 * 1024
+
+    def __init__(self, url, output_path, chunk_size=8192, threads=4, resume=False,
+                 temp_dir='./temp', headers=None):
         """
         Initialize download manager
 
@@ -20,15 +24,16 @@ class DownloadManager:
         :param chunk_size: Size of each chunk for streaming
         :param threads: Number of download threads
         :param resume: Whether to resume partially downloaded files
+        :param headers: 请求头；为 None 时使用 config.headers（不再修改全局字典）
         """
         self.url = url
         self.output_path = Path(output_path)
         self.filename = self.output_path.name
         self.chunk_size = chunk_size
-        self.threads = threads
+        self.threads = max(1, int(threads))
         self.resume = resume
-        self.temp_dir = temp_dir
-        self.temp_dir = Path(self.temp_dir)
+        self.headers = headers if headers is not None else config.headers
+        self.temp_dir = Path(temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.total_size = 0
         self.downloaded = 0
@@ -45,7 +50,7 @@ class DownloadManager:
         """Get the total file size from the server. Fallback to GET if HEAD fails."""
         # 尝试 HEAD 请求
         try:
-            head_response = requests.head(self.url, allow_redirects=True, headers=config.headers)
+            head_response = requests.head(self.url, allow_redirects=True, headers=self.headers)
             if head_response.status_code == 200 and 'content-length' in head_response.headers:
                 return int(head_response.headers['content-length'])
         except Exception:
@@ -54,7 +59,7 @@ class DownloadManager:
         # HEAD 失败，使用 GET 请求但只获取头部（不下载 body）
         try:
             # 发送一个 Range 请求只取第一个字节，服务器通常返回 content-range 和 content-length
-            headers = config.headers.copy()
+            headers = dict(self.headers)
             headers['Range'] = 'bytes=0-0'
             response = requests.get(self.url, stream=True, headers=headers)
             if response.status_code in (200, 206):
@@ -97,7 +102,7 @@ class DownloadManager:
         if start_byte > end_byte:
             return part_filename, True
 
-        headers_copy = config.headers.copy()
+        headers_copy = dict(self.headers)
         headers_copy['Range'] = f'bytes={start_byte}-{end_byte}'
 
         try:
@@ -151,19 +156,32 @@ class DownloadManager:
         if resume_downloaded > 0:
             print(f"Found already downloaded parts: {resume_downloaded:,} bytes ({resume_downloaded / self.total_size:.1%})")
 
+        # 文件太小时减少分片数，避免出现长度为 0 的分片
+        max_parts = max(1, self.total_size // self.MIN_PART_SIZE)
+        self.threads = max(1, min(self.threads, max_parts))
+
         part_size = math.ceil(self.total_size / self.threads)
         ranges = []
         for i in range(self.threads):
             start = i * part_size
+            if start > self.total_size - 1:
+                continue
             end = min((i + 1) * part_size - 1, self.total_size - 1)
             ranges.append((start, end, i))
 
         start_time = time.time()
         bar_width = 40
 
-        def update_progress():
+        last_print = [0.0]
+
+        def update_progress(force=False):
+            # 每个 chunk 都打印会把控制台刷爆，这里做 0.1 秒节流
             nonlocal start_time, bar_width
-            elapsed_time = time.time() - start_time
+            now = time.time()
+            if not force and now - last_print[0] < 0.1:
+                return
+            last_print[0] = now
+            elapsed_time = now - start_time
             with self.lock:
                 progress = self.downloaded / self.total_size
                 filled_length = int(bar_width * progress)
@@ -198,10 +216,10 @@ class DownloadManager:
                     print(f"\nException in thread {part_num}: {e}")
                     success = False
 
-        update_progress()
+        update_progress(force=True)
         print()
 
-        if success and completed == self.threads:
+        if success and completed == len(ranges):
             if self._merge_parts(part_files, self.output_path):
                 total_time = time.time() - start_time
                 print(f"✓ Download complete! Total time: {total_time:.2f}s, Average speed: {self.downloaded / total_time / 1024 / 1024:.2f} MB/s")
@@ -214,25 +232,28 @@ class DownloadManager:
 
     def _single_thread_download(self):
         print("Switching to single-thread download mode...")
-        return _original_download(self.url, self.output_path, self.chunk_size)
+        return _original_download(self.url, self.output_path, self.chunk_size, self.headers)
 
 
-def download(url, output_path=None, chunk_size=8192, threads=1, resume=False):
+def download(url, output_path=None, chunk_size=8192, threads=1, resume=False, headers=None):
+    """统一下载入口：单线程或多线程分片，返回是否成功。"""
     if threads == 1 and not resume:
-        return _original_download(url, output_path, chunk_size)
+        return _original_download(url, output_path, chunk_size, headers)
 
-    manager = DownloadManager(url, output_path, chunk_size, threads, resume)
+    manager = DownloadManager(url, output_path, chunk_size, threads, resume, headers=headers)
     return manager.download()
 
 
-def _original_download(url, output_path, chunk_size=8192):
+def _original_download(url, output_path, chunk_size=8192, headers=None):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    request_headers = headers if headers is not None else config.headers
 
     total_size = None
     # 尝试 HEAD 获取大小，失败则忽略
     try:
-        head_resp = requests.head(url, allow_redirects=True, headers=config.headers)
+        head_resp = requests.head(url, allow_redirects=True, headers=request_headers)
         if head_resp.status_code == 200 and 'content-length' in head_resp.headers:
             total_size = int(head_resp.headers['content-length'])
     except Exception:
@@ -240,7 +261,7 @@ def _original_download(url, output_path, chunk_size=8192):
 
     try:
         # 发送 GET 请求（实际下载）
-        response = requests.get(url, stream=True, allow_redirects=True, headers=config.headers)
+        response = requests.get(url, stream=True, allow_redirects=True, headers=request_headers)
         response.raise_for_status()
 
         # 如果 HEAD 未能获取大小，从 GET 响应头获取
@@ -254,12 +275,18 @@ def _original_download(url, output_path, chunk_size=8192):
         bar_width = 40
         downloaded = 0
         start_time = time.time()
+        last_print = 0.0
 
         with open(output_path, 'wb') as file:
             for chunk in response.iter_content(chunk_size=chunk_size):
                 if chunk:
                     file.write(chunk)
                     downloaded += len(chunk)
+
+                    now = time.time()
+                    if now - last_print < 0.1:
+                        continue
+                    last_print = now
 
                     if total_size:
                         progress = downloaded / total_size

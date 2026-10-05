@@ -1,154 +1,201 @@
+"""
+B 站音频流下载。
+
+流程：解析 BV 号 → 取视频元信息（aid/cid/分P/时长）→ WBI 签名请求 playurl
+→ 取最高码率音频流 → 多线程分片下载为 .m4s。
+"""
+
 import re
-import time
-import hashlib
-import requests
-from urllib.parse import urlparse, parse_qs
 from pathlib import Path
-import urllib3
+from urllib.parse import urlparse, parse_qs
 
-import utils
-
-urllib3.disable_warnings()
+import requests
 
 import config
 import downloading
+import title_cleaner
+import utils
+from generate_params import FALLBACK_KEYS, fallback_warning, refresh_wbi_keys, \
+    set_keys, sign_params, using_fallback
 
 
 class DownloadAudio:
     """Main class for downloading audio from Bilibili videos."""
 
-    def __init__(self, threads=4, temp_dir='./temp',m4s_temp='./m4s_temp'):
-        self.img_key = '7cd084941338484aae1ad9425b84077c'
-        self.sub_key = '4932caff0ff746eab6f01bf08b70ac45'
-        self.play_url = "https://api.bilibili.com/x/player/playurl"
-        self.api_url = "https://api.bilibili.com/x/web-interface/view?bvid="
-        self.bv_av_pattern = r'(BV[a-zA-Z0-9]+)'
+    PLAY_URL = "https://api.bilibili.com/x/player/wbi/playurl"
+    VIEW_URL = "https://api.bilibili.com/x/web-interface/view?bvid="
+    BV_PATTERN = r"(BV[a-zA-Z0-9]+)"
 
+    MAX_DURATION = 900          # 超过 15 分钟基本不是单曲（循环版 / 直播录像）
+    DEFAULT_TIMEOUT = 10
+
+    def __init__(self, threads=4, temp_dir="./temp", m4s_temp="./m4s_temp",
+                 cookie_file=None, timeout=0):
         self.m4s_temp = Path(m4s_temp)
-        self.threads = threads
+        self.threads = max(1, int(threads))
         self.temp_dir = Path(temp_dir)
+        self.timeout = timeout if timeout and timeout > 0 else self.DEFAULT_TIMEOUT
+        # 登录后才能拿到高码率（320k / Hi-Res）音频流
+        self._cookie_header = config.cookie_header(cookie_file)
 
-    def _get_video_information(self, video_id: str):
+    # ---------- 工具 ----------
+
+    def _headers(self, referer: str = None) -> dict:
+        """构造请求头：不再污染全局 config.headers，每次返回副本。"""
+        headers = dict(config.headers)
+        headers.update(self._cookie_header)
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
+    # ---------- 接口 ----------
+
+    def _get_video_information(self, video_id: str, referer: str = None) -> dict:
         """
-        Fetch video metadata from the Bilibili API.
-
-        Args:
-            video_id (str): BV or AV identifier of the video.
+        获取视频元信息。
 
         Returns:
-            tuple: (aid, pic, title, cid)
-                - aid (str): Video aid (For internal program use only).
-                - pic (str): Cover image URL (Interface for later development).
-                - title (str): Video title (For internal program use only).
-                - cid (str): Content ID (For internal program use only).
+            dict: aid / cid / title / pages / duration
         """
-        api_url = self.api_url + video_id
-        json_data = requests.get(api_url, headers=config.headers, verify=False).json()
-        data = json_data['data']
-        aid,cid,title,pages = data['aid'],data['cid'],data['title'],data['pages']
-        duration = data.get('duration', 0)
-        return aid,cid,title,pages,duration
+        response = requests.get(
+            self.VIEW_URL + video_id,
+            headers=self._headers(referer),
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("code") != 0:
+            raise RuntimeError(
+                f"获取视频信息失败: {payload.get('code')} {payload.get('message')}"
+            )
 
-    def _wbi_sign(self, aid, cid):
-        """
-        Generate WBI signature (w_rid) for the given aid and cid.
+        data = payload["data"]
+        return {
+            "aid": data["aid"],
+            "cid": data["cid"],
+            "title": data["title"],
+            "pages": data.get("pages", []),
+            "duration": data.get("duration", 0),
+        }
 
-        Args:
-            aid (int): Video aid.
-            cid (int): Content ID of the specific part.
-
-        Returns:
-            dict: Parameters including the generated 'w_rid' signature.
-        """
-        params = {
+    def get_audio_url(self, aid, cid, referer: str = None) -> str:
+        """用 WBI 签名请求 playurl，返回码率最高的音频流地址。"""
+        base_params = {
             "avid": aid,
             "cid": cid,
-            "fnval": 4048,
-            "mid": 0,
+            "fnver": 0,
+            "fnval": 4048,     # DASH 格式
+            "fourk": 1,
             "platform": "pc",
-            "qn": 30280,
-            "wts": int(time.time()),
+            "qn": 30280,       # 目标：320kbps
         }
-        # Sort parameters alphabetically as required by WBI signature
-        sorted_params = sorted(params.items())
-        query = '&'.join([f"{k}={v}" for k, v in sorted_params])
-        sign_str = query + self.img_key + self.sub_key
-        params["w_rid"] = hashlib.md5(sign_str.encode()).hexdigest()
-        return params
 
-    def get_audio_url(self, aid, cid):
-        """
-        Request the Bilibili API to obtain the direct audio stream URL.
+        payload = self._request_playurl(base_params, referer)
 
-        Args:
-            aid (int): Video aid.
-            cid (int): Content ID.
+        if payload.get("code") != 0:
+            # 多半是密钥过期，强制刷新后再试一次
+            refresh_wbi_keys(timeout=self.timeout)
+            payload = self._request_playurl(base_params, referer)
 
-        Returns:
-            str: Direct audio stream URL (baseUrl of the first audio stream).
-        """
-        params = self._wbi_sign(aid, cid)
-        resp = requests.get(self.play_url, params=params, headers=config.headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        audio_list = data.get("data", {}).get("dash", {}).get("audio", [])
+        if payload.get("code") != 0:
+            # 还是不行就依次退化到内置的历史密钥，谁通过就用谁
+            for candidate in FALLBACK_KEYS:
+                set_keys(candidate)
+                payload = self._request_playurl(base_params, referer)
+                if payload.get("code") == 0:
+                    break
+
+        if payload.get("code") == 0 and using_fallback():
+            print(fallback_warning())
+
+        if payload.get("code") != 0:
+            raise RuntimeError(
+                f"获取音频流失败: {payload.get('code')} {payload.get('message')}"
+            )
+
+        audio_list = (payload.get("data") or {}).get("dash", {}).get("audio") or []
         if not audio_list:
-            raise Exception("No audio stream found in API response")
-        return audio_list[0].get("baseUrl")
+            raise RuntimeError("接口未返回音频流（可能需要登录 Cookie）")
 
-    def download_audio(self, video_url):
+        best = max(audio_list, key=lambda item: item.get("bandwidth") or item.get("id") or 0)
+        return best.get("baseUrl")
+
+    def _request_playurl(self, base_params: dict, referer: str = None) -> dict:
+        """签名并请求 playurl 接口。"""
+        params = sign_params(base_params, timeout=self.timeout)
+        response = requests.get(
+            self.PLAY_URL,
+            params=params,
+            headers=self._headers(referer),
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    # ---------- 主流程 ----------
+
+    def download_audio(self, video_url: str) -> Path:
         """
-        Parse the video page, retrieve audio URL, and download the audio file.
-        Supports multi-part videos (e.g., ?p=5) by selecting the correct part.
+        下载视频的音频流为 .m4s。
 
-        Args:
-            video_url (str): Full Bilibili video URL.
+        支持多 P 视频（?p=5 会下载对应分 P）。失败时抛异常，不返回无效路径。
         """
-        #Get aid,cid
-        match = re.search(self.bv_av_pattern, video_url)
-        video_id = match.group(0)
-        aid,first_cid,title,pages,duration = self._get_video_information(video_id)
+        match = re.search(self.BV_PATTERN, video_url)
+        if not match:
+            raise ValueError(f"无法从链接中解析 BV 号: {video_url}")
+        video_id = match.group(1)
 
-        MAX_DURATION = 900
-        if duration > MAX_DURATION:
-            raise Exception(f"Video duration {duration}s exceeds limit {MAX_DURATION}s, possibly a loop version.")
+        info = self._get_video_information(video_id, referer=video_url)
+        duration = info["duration"] or 0
+        if duration > self.MAX_DURATION:
+            raise RuntimeError(
+                f"视频时长 {duration}s 超过上限 {self.MAX_DURATION}s，可能是循环版或长视频"
+            )
 
-        # Determine correct cid and part title for multi-part videos
-        parsed = urlparse(video_url)
-        query_params = parse_qs(parsed.query)
-        p_str = query_params.get('p', ['1'])[0]
-        try:
-            p = int(p_str)
-        except ValueError:
-            p = 1
-        if pages and 1 <= p <= len(pages):
-            cid = pages[p - 1].get('cid')
-            part_title = pages[p - 1].get('part', '')
+        # 多 P 视频：按 ?p= 取对应的 cid 与分 P 标题
+        page = self._parse_page(video_url)
+        pages = info["pages"] or []
+        if pages and 1 <= page <= len(pages):
+            cid = pages[page - 1].get("cid")
+            part_title = pages[page - 1].get("part", "")
         else:
-            cid = first_cid
-            part_title = ''
+            cid = info["cid"]
+            part_title = ""
 
-        # Get audio stream URL
-        audio_url = self.get_audio_url(aid, cid)
+        audio_url = self.get_audio_url(info["aid"], cid, referer=video_url)
+        if not audio_url:
+            raise RuntimeError("未取到音频流地址")
 
-        # Build filename: video title + optional part title
-        if part_title and part_title != title:
-            filename = f"{title} - {part_title}"
-        else:
-            filename = title
-        filename = utils.normalize_filename(filename)
-        output_path = self.m4s_temp / f"{filename}.m4s"
+        raw_title = info["title"]
+        # 标题 -> 干净歌名：去【】标签、去引号歌词、去噪声词，失败回退原始标题
+        title = title_cleaner.clean_song_title(raw_title)
+        part = title_cleaner.clean_song_title(part_title) if part_title else ""
+        filename = f"{title} - {part}" if part and part != title else title
+        output_path = self.m4s_temp / f"{utils.normalize_filename(filename)}.m4s"
 
-        config.headers["Referer"] = video_url
-        downloading.download(audio_url,
-                             threads=self.threads,
-                             output_path=output_path,
-                             resume=True)
+        success = downloading.download(
+            audio_url,
+            threads=self.threads,
+            output_path=output_path,
+            resume=True,
+            headers=self._headers(referer=video_url),
+        )
+        if not success or not output_path.exists():
+            raise RuntimeError(f"音频下载失败: {output_path}")
+
         return output_path
+
+    @staticmethod
+    def _parse_page(video_url: str) -> int:
+        """解析 ?p= 参数，默认第 1 个分 P。"""
+        query = parse_qs(urlparse(video_url).query)
+        try:
+            return int(query.get("p", ["1"])[0])
+        except ValueError:
+            return 1
 
 
 if __name__ == "__main__":
-    """The test code"""
-    url = input("Please enter the url of your video: ")
-    downloader = DownloadAudio(threads=16, temp_dir='./temp')
-    downloader.download_audio(url)
+    url = input("Please enter the url of your video: ").strip()
+    downloader = DownloadAudio(threads=16, temp_dir="./temp")
+    print(downloader.download_audio(url))
