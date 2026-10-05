@@ -459,6 +459,29 @@ def test_volume_announce():
           "V 帧出现了 %d 次" % shown2.count(wanted[0]) if wanted else "无基准帧")
 
 
+def test_hex_sync():
+    """
+    hex 是二进制，git diff 看不出内容 —— 改了 .py 忘了重新打包的话没人会发现。
+    这里用打包时记录的源码指纹来兜住这件事。
+
+    hex 缺失时只提示不判失败：hex 是构建产物，没有它也完全能正常工作
+    （去 python.microbit.org 粘贴源码即可）。
+    """
+    print("\n[12] 固件 hex 与源码是否同步")
+
+    try:
+        import hex_sync
+    except ImportError:
+        print("    [-] 跳过：hex_sync 不可用")
+        return
+
+    ok, note, _ = hex_sync.check()
+    if ok is None:
+        print("    [-] 跳过：%s" % note)
+        return
+    check("hex 与源码同步", ok, note)
+
+
 def main():
     print("=" * 72)
     print("micro:bit 板端固件离线校验 —— 无需开发板")
@@ -474,6 +497,7 @@ def main():
     test_logo_and_shake()
     test_keepalive_no_redraw()
     test_volume_announce()
+    test_hex_sync()
     test_protocol_compat()
 
     print("\n" + "=" * 72)
