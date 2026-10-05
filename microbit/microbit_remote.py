@@ -14,24 +14,25 @@
 #   | B 长按(>0.6s)        | VOLUP      | 音量 +10           |
 #   | A+B 短按             | PAUSE      | 播放 / 暂停切换    |
 #   | A+B 长按(>0.6s)      | STOP       | 停止               |
-#   | 触摸 logo（仅 V2）   | PAUSE      | 和 A+B 短按等价    |
+#   | 触摸 logo（仅 V2）   | PAUSE      | 和 A+B 短按等价（氧化失灵时就用 A+B） |
 #   | 摇一摇               | QUERY      | 让主机重发全量状态 |
 #
-# 屏幕：有歌播放时滚动「歌名  已播/总长」；音量**不挂在这条滚动串上**，
-#       而是音量变化时静态闪一下「V + 数字」（见 pump_screen()）。
-# 串口 115200，每行 ASCII 加 \n 结尾。
+# 屏幕：滚动「歌名 已播/总长」；音量变化时静态闪「V + 数字」，不挂在滚动串上
+# 串口 115200，每行 ASCII 加 \n 结尾
 #
-# ⚠️ 三个容易踩的坑：
-#   1. 本文件执行 `uart.init()` 之后 REPL 就断了，Mu / Thonny 的串口监视器会打不开。
-#      想重新烧录，直接用编辑器再刷一次 .hex 即可。
-#   2. micro:bit 的点阵字体只有 ASCII，中文歌名显示成方块是正常的，
-#      主机侧会把中文转成拼音（需要 pip install pypinyin）。
-#   3. 屏幕相关的一切都不能用 sleep()，否则睡眠期间按键和串口没人管，
-#      长按、组合键、切歌全会漏。滚动和「音量播报」都是靠主循环一轮轮推进的。
+# logo 是电容感应不是按键，氧化 / 受潮会读不到，所以暂停没押在它身上
+# （A+B 短按同样能暂停）。另两道兜底：开板就按着不会误触发暂停；
+# 传感器卡在「一直被触摸」超过 LOGO_STUCK_MS 就自动停用 logo。
+#
+# ⚠️ 四个容易踩的坑：
+#   1. uart.init() 之后 REPL 就断了，Mu / Thonny 打不开串口（重刷 .hex 即可）
+#   2. 点阵字体只有 ASCII，中文歌名显示成方块是正常的（主机侧会转成拼音）
+#   3. 屏幕相关的都不能用 sleep()，否则睡眠期间按键和串口没人管
+#   4. 本文件必须 < 20151 字节（uflash 硬限制），否则 --regen 会失败
 # =============================================================================
 
-# 这里用 `*` 而不是逐个列出：micro:bit V1 / V2 的成员不完全一样，
-# 用通配符导入后再靠 NameError 判断某个引脚是否存在，就能自动适配版本。
+# 用 `*` 而不是逐个列出：micro:bit V1 / V2 成员不同，
+# 通配符导入后再靠 NameError 判断引脚是否存在，就能自动适配版本。
 from microbit import *
 
 # micro:bit V2 才有 logo 触摸引脚；V1 上这个名字不存在，靠 NameError 自动降级
@@ -55,6 +56,7 @@ COMBO_WINDOW_MS = 250     # A / B 在这个窗口内先后按下，算「同时�
 SCREEN_PERIOD_MS = 6000   # 兜底：至少这么久才重滚一遍
 SCROLL_DELAY_MS = 150     # display.scroll 的每步延时，要和它自己的默认值保持一致
 TOUCH_DEBOUNCE_MS = 400   # logo 触摸去抖（手指按住会连续触发）
+LOGO_STUCK_MS = 5000      # logo 连续报「被触摸」超过这么久，判定传感器卡死并停用
 HANDSHAKE_TIMEOUT = 15    # 开机后最多发这么多次 QUERY 握手
 GLYPH_BRIGHT = 4          # 自定义字模/图标的亮度；点阵满亮是 9，晚上看久了刺眼
 DIGIT_MS = 420            # 音量播报时每一位停留多久
@@ -135,6 +137,8 @@ _last_query_at = 0
 _last_scroll_at = 0
 _last_touch_at = 0
 _logo_down = False        # logo 是否处于「已按下未松开」，用于边沿触发
+_logo_primed = False      # 开机后是否已采样过一次 logo 初始状态
+_touch_since = 0          # 本次连续「被触摸」从什么时候开始
 
 # 按键状态机
 _a_down = False
@@ -257,8 +261,7 @@ def pump_screen(now):
                 _volume_until = now + DIGIT_MS
         return
 
-    # 周期性把「歌名 + 进度」重滚一遍，而不是每次 TIME 都打断开局滚动。
-    # 间隔按当前滚动串的长度算，保证上一轮滚完才轮到下一轮。
+    # 周期重滚一遍，间隔按滚动串长度算，保证上一轮滚完才轮到下一轮
     if now - _last_scroll_at >= screen_period():
         render()
 
@@ -283,8 +286,7 @@ def parse_line(line):
     if key == "STATUS":
         _host_seen = True
         if value == status:
-            # keepalive 每 5 秒重发一遍同样的状态。把它当成变化的话，
-            # 歌名每次滚动到一半就会被掐回起点，看着像在抽风。
+            # keepalive 每 5 秒重发同样的状态；当成变化会把滚动掐回起点（看着像抽风）
             return False
         status = value
         return True
@@ -436,7 +438,7 @@ def poll_buttons():
 
 def poll_gestures():
     """logo 触摸 / 摇一摇。"""
-    global _last_touch_at, _logo_down
+    global _last_touch_at, _logo_down, _logo_primed, _touch_since, HAS_LOGO
 
     now = running_time()
 
@@ -445,8 +447,27 @@ def poll_gestures():
             touched = pin_logo.is_touched()
         except Exception:
             touched = False
-        # 边沿触发：手指一直按着只算一次，松开后才允许再次触发。
-        # 这里不能写成「每 400ms 触发一次」，那样按住 logo 会来回切换播放/暂停。
+
+        # 开机第一次轮询只采样：按复位键时手指常在 logo 上，不采样会白送一次暂停
+        if not _logo_primed:
+            _logo_primed = True
+            _logo_down = bool(touched)
+            _touch_since = now if touched else 0
+            return None
+
+        if touched:
+            if _touch_since == 0:
+                _touch_since = now
+            elif now - _touch_since > LOGO_STUCK_MS:
+                # 连续几秒都报「被触摸」= 传感器卡死。再等下去 logo 会永久停在
+                # 已按下状态、再也出不来 PAUSE，不如停用，把暂停交给 A+B 短按
+                HAS_LOGO = False
+                _logo_down = False
+                return None
+        else:
+            _touch_since = 0
+
+        # 边沿触发：按着只算一次，松手才允许再触发（否则按住会来回切换播放/暂停）
         if touched and not _logo_down and now - _last_touch_at > TOUCH_DEBOUNCE_MS:
             _logo_down = True
             _last_touch_at = now

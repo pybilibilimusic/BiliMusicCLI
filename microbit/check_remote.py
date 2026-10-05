@@ -59,6 +59,18 @@ def test_static():
         source = handle.read()
     tree = ast.parse(source)
 
+    # uflash 的硬限制：脚本超过这个字节数就拒绝打包，而报错信息藏得挺深
+    # （"Python script must be less than 20151.0 bytes"）。
+    # 这个文件已经很接近上限了，多写几行注释就能把 --regen 搞挂，
+    # 所以留一条余量红线：低于 512 字节就报警，逼着先精简再继续加。
+    UFLASH_LIMIT = 20151
+    HEADROOM_MIN = 512
+    size = os.path.getsize(FIRMWARE)
+    free = UFLASH_LIMIT - size
+    check("固件体积离 uflash 上限还有余量", free >= HEADROOM_MIN,
+          "%d 字节，只剩 %d（红线 %d）—— 再精简点，别加注释了"
+          % (size, free, HEADROOM_MIN))
+
     # --- import 白名单 ---
     # micro:bit 固件里确实存在的模块才算数
     allowed = {"microbit", "music", "radio", "speech", "audio", "math",
@@ -420,9 +432,61 @@ def test_keepalive_no_redraw():
           period > 6000, "周期 %dms" % period)
 
 
+def test_logo_hardware_failsafe():
+    """
+    logo 那块金手指氧化 / 受潮之后，is_touched() 会变得不可靠。
+
+    两种坏法都要挡住：
+    1. 开板时就报「被触摸」（按住复位键很常见）-> 不采样会白送一次暂停；
+    2. 一直卡在「被触摸」-> 边沿触发会永久停在已按下状态，logo 彻底不出指令，
+       不如直接停用，把暂停交给 A+B 短按。
+    """
+    print("\n[12] logo 硬件失效的兜底（开机采样 / 卡死停用）")
+
+    # --- 开板就按着 logo：那一次按下不该发 PAUSE ---
+    # 不做开机采样的话，固件第一次轮询就会看到「被触摸」并立刻发一条暂停出来，
+    # 于是「按住复位键开机」= 凭空暂停一次。
+    def touched_at_boot(sim):
+        sim.touch(0, 3000)
+
+    sent, _ = press_and_collect(True, [], extra=touched_at_boot, max_ticks=100)
+    check("开板就按着 logo 不会白送一次 PAUSE",
+          "PAUSE" not in sent, str(sent))
+
+    # --- 但松手之后再摸，必须照常能用（不能采样一次就把它废了）---
+    def boot_then_tap(sim):
+        sim.touch(0, 2000)
+        sim.touch(3000, 3400)
+
+    sent, _ = press_and_collect(True, [], extra=boot_then_tap, max_ticks=100)
+    check("开板按住过之后，后续触摸照常触发",
+          sent.count("PAUSE") == 1, str(sent))
+
+    # --- 传感器卡死：连续报触摸超过 LOGO_STUCK_MS 就停用 ---
+    def stuck(sim):
+        sim.touch(1000, 12000)
+        sim.touch(13000, 13400)
+
+    sent, sim = press_and_collect(True, [], extra=stuck, max_ticks=320)
+    check("卡死后 logo 被停用（只发过最初那一次）",
+          sent.count("PAUSE") == 1, "PAUSE 发了 %d 次" % sent.count("PAUSE"))
+    check("卡死后 HAS_LOGO 被置为 False", sim.state("HAS_LOGO") is False,
+          str(sim.state("HAS_LOGO")))
+
+    # 没卡死时不能误判
+    def normal(sim):
+        sim.touch(1000, 1400)
+        sim.touch(3000, 3400)
+
+    sent, sim = press_and_collect(True, [], extra=normal, max_ticks=100)
+    check("正常连摸两次不会误判成卡死",
+          sent.count("PAUSE") == 2 and sim.state("HAS_LOGO") is True,
+          "%s / HAS_LOGO=%s" % (sent, sim.state("HAS_LOGO")))
+
+
 def test_volume_announce():
     """音量从滚动串里摘出来，改成变化时静态闪数字。"""
-    print("\n[11] 音量播报：静态闪数字，不再挂在滚动尾巴上")
+    print("\n[13] 音量播报：静态闪数字，不再挂在滚动尾巴上")
 
     sim = MicrobitSim(v2=True, max_ticks=120)
     sim.inject_serial("STATUS:play\n", at_ms=600)
@@ -467,7 +531,7 @@ def test_hex_sync():
     hex 缺失时只提示不判失败：hex 是构建产物，没有它也完全能正常工作
     （去 python.microbit.org 粘贴源码即可）。
     """
-    print("\n[12] 固件 hex 与源码是否同步")
+    print("\n[14] 固件 hex 与源码是否同步")
 
     try:
         import hex_sync
@@ -496,6 +560,7 @@ def main():
     test_buttons()
     test_logo_and_shake()
     test_keepalive_no_redraw()
+    test_logo_hardware_failsafe()
     test_volume_announce()
     test_hex_sync()
     test_protocol_compat()

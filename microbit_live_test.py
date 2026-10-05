@@ -28,7 +28,9 @@ from microbit_bridge import MicrobitBridge, ascii_display, clamp_volume
 
 MBED_USB_ID = "0D28:0204"     # micro:bit 的 USB VID:PID
 
-OK, FAIL, SKIP = "OK", "X", "-"        # 结果标记，打印时套上方括号
+# HW = 板子硬件本身不响应（不是代码问题），单独归一类，
+#      免得报告里挂着一个「失败」却分不清该改代码还是该擦金手指
+OK, FAIL, SKIP, HW = "OK", "X", "-", "HW"
 
 
 # --------------------------------------------------------------- 端口发现
@@ -120,20 +122,26 @@ class FakePlayer:
 # --------------------------------------------------------------- 结果记账
 class Report:
     def __init__(self):
-        self.passed, self.failed, self.skipped = [], [], []
+        self.passed, self.failed, self.skipped, self.hardware = [], [], [], []
 
     def record(self, tag, name, note=""):
-        {"OK": self.passed, "X": self.failed, "-": self.skipped}[tag].append(name)
-        shown = {"OK": "[OK]", "X": "[X]", "-": "[--]"}[tag]
+        {"OK": self.passed, "X": self.failed, "-": self.skipped,
+         "HW": self.hardware}[tag].append(name)
+        shown = {"OK": "[OK]", "X": "[X]", "-": "[--]", "HW": "[硬件]"}[tag]
         print(f"    {shown}  {name}" + (f"   {note}" if note else ""))
 
     def summary(self):
-        total = len(self.passed) + len(self.failed) + len(self.skipped)
+        buckets = (self.passed, self.failed, self.skipped, self.hardware)
+        total = sum(len(b) for b in buckets)
         print()
         print("=" * 64)
-        print(f"总计 {total} 项：通过 {len(self.passed)} / 失败 {len(self.failed)} / 跳过 {len(self.skipped)}")
+        print(f"总计 {total} 项：通过 {len(self.passed)} / 失败 {len(self.failed)} "
+              f"/ 跳过 {len(self.skipped)} / 硬件 {len(self.hardware)}")
         if self.failed:
             print("失败项：" + ", ".join(f"'{n}'" for n in self.failed))
+        if self.hardware:
+            print("硬件项：" + ", ".join(f"'{n}'" for n in self.hardware)
+                  + "  （板子没反应，不是代码问题）")
         if self.skipped:
             print("跳过项：" + ", ".join(f"'{n}'" for n in self.skipped))
         print("=" * 64)
@@ -493,26 +501,34 @@ class LiveTester:
                 self.report.record(SKIP, f"{name}（--auto 已跳过）")
             return
 
+        # 第 4 项 = 失败时算「硬件问题」而不是代码问题（只有 logo 属于这类：
+        # 那块金手指是电容感应，氧化、受潮、手汗都会让它彻底读不到）
         steps = [
-            ("A 短按 -> PREV", "快速按一下左侧 A 键然后松开", {"PREV"}),
-            ("B 短按 -> NEXT", "快速按一下右侧 B 键然后松开", {"NEXT"}),
-            ("A 长按 -> VOLDOWN", "按住左侧 A 键不放，超过 1 秒后松开", {"VOL"}),
-            ("B 长按 -> VOLUP", "按住右侧 B 键不放，超过 1 秒后松开", {"VOL"}),
+            ("A 短按 -> PREV", "快速按一下左侧 A 键然后松开", {"PREV"}, False),
+            ("B 短按 -> NEXT", "快速按一下右侧 B 键然后松开", {"NEXT"}, False),
+            ("A 长按 -> VOLDOWN", "按住左侧 A 键不放，超过 1 秒后松开", {"VOL"}, False),
+            ("B 长按 -> VOLUP", "按住右侧 B 键不放，超过 1 秒后松开", {"VOL"}, False),
             ("A+B 短按 -> PAUSE",
-             "同时按下 A 和 B（间隔小于 0.25 秒），随即松开（总时长别超过 0.6 秒）", {"PAUSE"}),
+             "同时按下 A 和 B（间隔小于 0.25 秒），随即松开（总时长别超过 0.6 秒）",
+             {"PAUSE"}, False),
             ("A+B 长按 -> STOP",
-             "同时按住 A 和 B 不放，超过 1 秒后一起松开", {"STOP"}),
+             "同时按住 A 和 B 不放，超过 1 秒后一起松开", {"STOP"}, False),
             ("触摸 logo -> PAUSE",
-             "手指按住正面金色 logo 后松开（仅 V2 有，金手指氧化时会失灵）", {"PAUSE"}),
-            ("摇一摇 -> QUERY 并回 STATE", "把板子拿起来晃一下", {"GETSTATE"}),
+             "手指按住正面金色 logo 后松开（仅 V2 有，金手指氧化时会失灵）",
+             {"PAUSE"}, True),
+            ("摇一摇 -> QUERY 并回 STATE", "把板子拿起来晃一下", {"GETSTATE"}, False),
         ]
 
-        for name, action, expected in steps:
+        for name, action, expected, is_hardware in steps:
             print(f"\n  >> {name}")
             print(f"    请操作：{action}")
             got, value = self.wait_event(expected, self.wait)
             if got is None:
-                self.report.record(FAIL, name, f"（{self.wait}s 内没收到）")
+                if is_hardware:
+                    self.report.record(HW, name, f"（{self.wait}s 内没收到）")
+                    self.explain_logo_failure()
+                else:
+                    self.report.record(FAIL, name, f"（{self.wait}s 内没收到）")
                 continue
             note = f" -> 收到 {got}" + (f"={value}" if value is not None else "")
             if got == "VOL":
@@ -522,10 +538,27 @@ class LiveTester:
             self.report.record(OK, name, note)
             time.sleep(0.8)
 
+        passed = set(self.report.passed)
         print("\n    提示：A+B 短按和 logo 触摸是同一个功能，任意一条通就能暂停。")
+        if "A+B 短按 -> PAUSE" in passed:
+            print("    A+B 短按已通过 —— 就算 logo 彻底失灵，暂停功能不受影响。")
+
+    @staticmethod
+    def explain_logo_failure():
+        """logo 没反应时把排查顺序说清楚，别让人对着代码找 bug。"""
+        print("    " + "-" * 58)
+        print("    logo 没响应。它不是按键，是电容感应，可能的坏法有这些：")
+        print("      1. 金手指氧化 / 沾汗 —— 用酒精棉片擦一下正面那块金色 logo")
+        print("      2. 手指太干 —— 手指先摸一下接地的金属，或略微哈气")
+        print("      3. USB 供电会改变电容基线 —— 拔掉线用电池再试一次")
+        print("      4. 摸 logo 的金属外圈，不要只按正中间")
+        print("    固件侧已经做过两道兜底：开板就按着不会误触发暂停；")
+        print("    传感器若卡在「一直被触摸」超过 5 秒会自动停用 logo。")
+        print("    无论如何，暂停请改用 A+B 短按。")
+        print("    " + "-" * 58)
 
     def run_protocol_cases(self):
-        """键盘使能 uma-协议层的边界情况。"""
+        """协议层的边界情况，纯软件注入，不用碰板子。"""
         print("\n" + "-" * 64)
         print("D 组：协议边界（软件注入，不用碰板子）")
         self.set_keepalive(9999)
