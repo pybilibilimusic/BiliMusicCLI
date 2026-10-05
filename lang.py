@@ -24,6 +24,7 @@ language = {
         'cmd_batch_search_brief':'Batch download .m4s from a text file (no conversion)',
         'cmd_batch_extract_brief':'Batch download and convert to MP3 (auto-cleanup .m4s files)',
         'cmd_pause_brief':'Pause the current song',
+        'cmd_login_brief': 'Login to Bilibili by QR code',
 
         'cmd_exit_usage': 'exit\n    Exit the program.',
         'cmd_transform_usage': 'transform\n    Convert a single audio/video file via GUI selection.',
@@ -37,6 +38,13 @@ language = {
         'cmd_batch_search_usage': 'batch_search\n    Select a text file with song names/URLs,\n    download each as .m4s (kept in m4s_temp/).',
         'cmd_batch_extract_usage':'batch_extract [file]\n    Select or provide a text file with song names/URLs,\n    download and convert each to MP3, then delete .m4s.',
         'cmd_pause_usage': 'pause',
+        'cmd_login_usage': 'login [status]\n    Login to Bilibili by scanning a QR code (needed for 320kbps / Hi-Res).\n    Use "login status" to check whether the saved cookie is still valid.',
+        'cmd_progress_brief': 'Toggle the playback progress bar',
+        'cmd_progress_usage': 'progress [force]\n    Toggle the live progress bar (off by default in command mode, because the\n    background refresh overwrites whatever you are typing into input()).\n    Blocked while a micro:bit is connected; use "progress force" to override.',
+        'progress_bar_on': 'Progress bar on. It refreshes in place every 0.5s.',
+        'progress_bar_off': 'Progress bar off.',
+        'progress_bar_unavailable': 'No player available, cannot show the progress bar.',
+        'progress_bar_microbit': 'Progress bar skipped: a micro:bit is connected, so progress goes to the LED matrix instead. ("progress force" to show both)',
 
         'press_enter': 'Press Enter to continue...',
         'unknown_command': 'Unknown command: {}',
@@ -125,6 +133,14 @@ language = {
         'pyserial_not_installed':'pyserial not installed, micro:bit control disabled.',
         'microbit_connected':'✅ micro:bit connected on {}',
         'microbit_error':'⚠️ micro:bit error: {}',
+        'microbit_volume':'🔊 Volume set to {}',
+        'login_tip': 'A QR code will be generated. Scan it with the Bilibili mobile app...',
+        'login_success': 'Login successful, higher bitrate streams are now available. ({})',
+        'login_failed': 'Login failed or timed out. You can try again later by typing "login".',
+        'login_status_ok': 'Logged in as: {}',
+        'login_status_none': 'Not logged in (no valid cookie found).',
+        'login_not_logged_in': 'Tip: not logged in, audio is capped around 192kbps. '
+                               'Type "login" to scan the QR code for 320kbps / Hi-Res.',
         'prompt_play_now': 'Play now? (y/n): ',
         'saving_to_directory': 'Converted MP3 files will be saved to: {}',
     },
@@ -153,6 +169,7 @@ language = {
         'cmd_batch_search_brief': '批量下载 .m4s（不转换）',
         'cmd_batch_extract_brief': '批量下载并转换为 MP3（自动清理 .m4s）',
         'cmd_pause_brief': '暂停当前歌曲',
+        'cmd_login_brief': '扫码登录 B 站',
 
         'cmd_exit_usage': 'exit\n    退出控制台程序。',
         'cmd_transform_usage': 'transform\n    通过图形界面选择文件，转换为 MP3。',
@@ -166,12 +183,20 @@ language = {
         'cmd_batch_search_usage': 'batch_search\n    选择包含歌名或链接的文本文件，\n    批量下载为 .m4s（保留在 m4s_temp/ 目录）。',
         'cmd_batch_extract_usage': 'batch_extract [文件]\n    选择或指定包含歌名或链接的文本文件，\n    下载并转换为 MP3，然后删除原 .m4s 文件。',
         'cmd_pause_usage': 'pause\n    暂停或继续当前播放。',
+        'cmd_login_usage': 'login [status]\n    扫码登录 B 站（登录后可获取 320kbps / Hi-Res 音质）。\n    输入 login status 查看当前登录是否仍然有效。',
+        'cmd_progress_brief': '开关播放进度条',
+        'cmd_progress_usage': 'progress [force]\n    开关实时进度条（命令模式默认关闭：后台刷新会把你正在输入的内容顶掉）。\n    连着 micro:bit 时默认不开 —— 那种情况进度推到点阵屏；\n    想命令行也显示就用 progress force。',
+        'progress_bar_on': '进度条已开启，每 0.5 秒原地刷新一次。',
+        'progress_bar_off': '进度条已关闭。',
+        'progress_bar_unavailable': '播放器不可用，无法显示进度条。',
+        'progress_bar_microbit': '进度条未开启：已连接 micro:bit，进度改由点阵屏显示。（需要两者都显示请用 progress force）',
 
         'microbit_port_not_configured': '❌ 未配置 micro:bit 端口，请重新运行初始化。',
         'microbit_reconnecting': '🔄 正在尝试重连 micro:bit...',
         'pyserial_not_installed': '未安装 pyserial，micro:bit 控制功能已禁用。',
         'microbit_connected': '✅ micro:bit 已连接到 {}',
         'microbit_error': '⚠️ micro:bit 错误：{}',
+        'microbit_volume': '🔊 音量已设为 {}',
         'batch_failed': '  ✗ 失败：{}',
         'batch_extract_failed': '  ✗ 失败：{}：{}',
         'skipping_conversion': '  ✗ 下载失败，跳过转换。',
@@ -208,6 +233,8 @@ language = {
         'error_processing_song': '处理歌曲时出错：{}',
         'switching_to_version': '切换到下一版本：{}',
         'no_other_versions': '没有其他版本可切换',
+        'switching_to_next_song': '手动切到下一首。',
+        'cache_usage': '用法: cache list | clean [BV号]',
         'cache_empty': '缓存为空。',
         'cached_songs': '缓存的歌曲：',
         'file_label': '文件：{}',
@@ -253,7 +280,35 @@ language = {
         'already_mp3_skip': '  → 已存在 MP3，跳过转换。',
         'converted_to_mp3': '  → 已转换为 MP3。',
         'mic_invalid_reconfig': '麦克风设备无效或未配置，即将重新配置...',
+        'login_tip': '即将生成二维码，请用手机 B 站 App 扫码...',
+        'login_success': '登录成功，已可以下载更高码率的音频流。（{}）',
+        'login_failed': '登录失败或超时，稍后可再次输入 login 重试。',
+        'login_status_ok': '当前登录用户：{}',
+        'login_status_none': '当前未登录（没有可用的 Cookie）。',
+        'login_not_logged_in': '提示：当前未登录，音质上限约 192kbps；输入 login 扫码后可获取 320kbps / Hi-Res。',
         'prompt_play_now': '立即播放？(y/n): ',
         'saving_to_directory': '转换后的 MP3 将保存至：{}',
     }
 }
+
+# 配置文件里可能出现 "English" / "中文" 等各种写法，统一映射到语言包的键
+LANG_ALIASES = {
+    'en': 'en', 'eng': 'en', 'english': 'en',
+    'zh': 'zh', 'zh-cn': 'zh', 'cn': 'zh', 'chinese': 'zh',
+    '中文': 'zh', '简体中文': 'zh',
+}
+
+DEFAULT_LANG = 'zh'
+
+
+def normalize(code, default=DEFAULT_LANG):
+    """把任意写法的语言标识归一化成 'en' / 'zh'，无法识别时返回默认值。"""
+    if not code:
+        return default
+    return LANG_ALIASES.get(str(code).strip().lower(), default)
+
+
+def translate(code, key):
+    """按语言取文案，取不到就回退中文，再取不到就原样返回 key。"""
+    table = language.get(normalize(code), language[DEFAULT_LANG])
+    return table.get(key, language[DEFAULT_LANG].get(key, key))
