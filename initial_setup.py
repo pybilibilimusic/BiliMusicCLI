@@ -15,11 +15,13 @@ class InitialSetup:
         self.config_path = Path("config.ini")          # Path to the configuration file
         self.config = configparser.ConfigParser()      # Config parser instance
         self._reset_config_file = False
+        # 初始化向导里是否选择了「现在扫码登录」，由主程序（cmd_login）决定是否执行
+        self.pending_login = False
 
     def _default_config(self):
         """Set default configuration items including first-run flag, paths, timeout and threads"""
         self.config['first_run'] = {'first_run': '0'}
-        self.config['language'] = {'language': 'English'}   # Language option
+        self.config['language'] = {'language': 'zh'}        # 语言选项，取值需与 lang.py 的键一致（zh / en）
         self.config['paths'] = {
             'temporary_save_location': './temp',   # Directory for temporary files
             'logs': './log',                       # Directory for logs
@@ -142,6 +144,30 @@ class InitialSetup:
             self.config['microbit'] = {'port': ''}
         return None
 
+    def _record_login_choice(self, default='N'):
+        """
+        询问是否现在扫码登录 B 站。
+
+        只负责收集意愿（写进 self.pending_login），真正的扫码流程由
+        main_CUI.BiliLogin 执行，避免初始化模块反过来依赖主控模块。
+
+        :param default: 直接回车时的默认值，Y 表示默认登录，N 表示默认跳过
+        :return: 是否现在登录
+        """
+        print("\n#登录配置 Login config")
+        print("扫码登录后才能下载 320kbps / Hi-Res 音质；不登录也能用，音质上限约 192kbps。")
+        print("Log in to unlock 320kbps / Hi-Res audio; without login the bitrate caps at ~192kbps.")
+        print("也可以稍后在命令行里输入 login 再登录 / You can also type 'login' later.")
+
+        choice = self._inquiry(
+            context="是否现在扫码登录？Log in now?(Y or N):",
+            valid_value=["Y", "y", "N", "n"],
+            default=default,
+            target_type=str
+        )
+        self.pending_login = choice.lower() == 'y'
+        return self.pending_login
+
     def configure_microphone(self):
         """List input devices, let the user select an input microphone, and save it to config.ini"""
         import pyaudio
@@ -249,6 +275,7 @@ class InitialSetup:
                 self._default_config()
                 self._reset_config_file = False
                 self._record_microbit_port()
+                self._record_login_choice(default='N')
                 self.config['first_run'] = {'first_run': '1'}
                 self._setup_directories()
                 with open(self.config_path, 'w', encoding='utf-8') as f:
@@ -309,6 +336,9 @@ class InitialSetup:
             self.config['audio'] = {'input_device_index': str(device_index)}
 
             self._record_microbit_port()
+
+            # 登录：要不要现在扫码（自定义向导里默认登录）
+            self._record_login_choice(default='Y')
 
             print("Initialization complete.")
             self.config['first_run'] = {'first_run': '1'}

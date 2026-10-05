@@ -14,6 +14,12 @@ class VoiceRecognition:
     Voice recognition with wake word detection and ASR using FunASR.
     """
 
+    # 指令关键词。注意「暂停」与「停止」必须分开，否则说暂停会直接停掉播放
+    PAUSE_KEYWORDS = ["暂停", "停一下", "先停一下", "先停"]
+    STOP_KEYWORDS = ["停止", "别放了", "结束", "不听了", "关掉音乐", "闭嘴"]
+    RESUME_KEYWORDS = ["继续", "接着放", "恢复播放", "继续播放"]
+    NEXT_KEYWORDS = ["下一首", "切歌", "换一首", "下一曲"]
+
     def __init__(self,
                  wake_words: List[str],
                  sample_rate: int = 16000,
@@ -137,21 +143,23 @@ class VoiceRecognition:
                 raw_text = res[0]["text"]
                 text = rich_transcription_postprocess(raw_text)
 
-                # Check for stop/pause/resume/next commands (priority)
-                stop_keywords = ["停止", "暂停", "别放了", "结束"]
-                if any(kw in text for kw in stop_keywords):
+                # 指令词优先于唤醒词；暂停必须在停止之前判断
+                if any(kw in text for kw in self.PAUSE_KEYWORDS):
+                    if self.callback_pause:
+                        self.callback_pause()
+                    return
+
+                if any(kw in text for kw in self.STOP_KEYWORDS):
                     if self.callback_stop:
                         self.callback_stop()
                     return
 
-                resume_keywords = ["继续", "接着放", "恢复播放"]
-                if any(kw in text for kw in resume_keywords):
+                if any(kw in text for kw in self.RESUME_KEYWORDS):
                     if self.callback_resume:
                         self.callback_resume()
                     return
 
-                next_keywords = ["下一首", "切歌", "换一首"]
-                if any(kw in text for kw in next_keywords):
+                if any(kw in text for kw in self.NEXT_KEYWORDS):
                     if self.callback_next:
                         self.callback_next()
                     return
