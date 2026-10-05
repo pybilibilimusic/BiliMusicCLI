@@ -73,17 +73,18 @@ python main_CUI.py
 | `microbit/microbit_remote.py` | **跑在开发板上**的 MicroPython 参考实现（不是给电脑 Python 用的） |
 | `microbit/stub_microbit.py` | 上面那个固件的模拟层：假 display / 按键 / 串口 + 虚拟时钟 |
 | `microbit/check_remote.py` | 用模拟层离线跑一遍固件，刷板前先验证（无需开发板） |
+| `microbit/hex_sync.py` | 校验 / 重新打包固件 hex，防止 `.py` 改了而 hex 没跟上 |
 | `VoiceRecognition.py` | Silero VAD + FunASR 唤醒词与指令识别 |
 | `transform.py` | 调用 ffmpeg 做格式转换 |
 | `download_video.py` | 视频 DASH 下载与合并（独立脚本） |
 | `title_cleaner.py` | 分层歌名清洗（去标签 / 歌词片段 / 噪声词 / 切段） |
 | `main_CUI.py` 内的 `BiliLogin` | 扫码登录（`login` 命令），凭据存 `bilibili_cookies.json` |
-| `get_cookies.py` | 已合并进 `main_CUI.py`，文件已删除 |
+| ~~`get_cookies.py`~~ | 曾经是独立的扫码登录脚本，功能已并入 `main_CUI.py` 的 `BiliLogin`，文件已删除（Git 历史里还能翻到） |
 | `initial_setup.py` | 首次运行配置向导 |
 | `lang.py` / `config.py` / `utils.py` / `select_file.py` | 语言包 / 请求头 / 工具函数 / 文件选择对话框 |
 | `smoke_test.py` | 冒烟测试：一次性实跑全部可自动验证的功能 |
 | `clean_title_verify.py` | 歌名清洗规则的独立验证用例 |
-| `eval_search.py` | 搜索排序评测：`python eval_search.py`，目前 3 条用例，同时也是评测集的种子 |
+| `eval_search.py` | 搜索排序评测：`python eval_search.py` 打分，`--audit` 跑出结果供人工核对 |
 | `microbit_verify.py` | 用虚拟串口验证 micro:bit 协议与串口链路，不需要硬件 |
 | `microbit_live_test.py` | micro:bit 真机联调：连上串口后逐项下发报文、引导按键，双向验证（**需要开发板**） |
 | `progress_bar.py` | 播放进度条：纯渲染 + 后台刷新线程（生产代码） |
@@ -201,13 +202,24 @@ python microbit/check_remote.py     # 不需要开发板
 
 1. **官方在线编辑器**（推荐，runtime 版本最稳）：打开 <https://python.microbit.org>，
    把 `microbit/microbit_remote.py` 整个粘进去，Download 出的 `.hex` 拖进 MICROBIT 盘。
-2. **本地打包**：`pip install uflash` 之后执行下面的命令，会在目标目录生成 `micropython.hex`，
-   同样拖进 MICROBIT 盘。注意 uflash 自带的是 MicroPython **V2 beta** runtime，
-   仓库里已经放了一份这样打出来的 `microbit/microbit_remote_uflash_v2beta.hex`。
+2. **直接用仓库里打好的** `microbit/microbit_remote.hex` —— 拖进 MICROBIT 盘即可。
+
+⚠️ 第 2 条有个前提要清楚：本地 `uflash` 内置的 MicroPython runtime 是
+**2.0.0-beta.5**（2021 年的老版本）。V2.0 / V2.1 板子没问题，但
+**V2.2 板子请用第 1 种办法**（官方编辑器用的是当前正式版 runtime）。
+换句话说，`.py` 才是唯一可靠的真源，hex 只是图方便的产物。
 
 ```bash
-python -m uflash microbit/microbit_remote.py 输出目录
+# 改了固件源码后，重新打包（需要 pip install uflash）
+python microbit/hex_sync.py --regen
+
+# 只校验 hex 有没有落后于源码
+python microbit/hex_sync.py
 ```
+
+hex 是二进制，git diff 看不出内容，改了 `.py` 忘了重新打包的话没有任何人会注意到。
+所以打包时会顺带写一个指纹文件 `microbit_remote.hex.sha256` 记录当时源码的 sha256，
+`python microbit/check_remote.py` 每次都会校验它（第 [12] 组）。
 
 它会在模拟出来的 display / 按键 / 串口上真跑一遍固件，覆盖 import 是否成立、
 按键状态机（短按 / 长按 / 组合 / 边沿触发）、报文解析、屏幕有没有被刷爆，
@@ -266,6 +278,17 @@ python microbit_live_test.py --auto     # 无人值守：跳过一切需要人�
 注意串口一次只能被一个程序占用，跑之前把 Mu / Thonny / 串口助手都关掉。
 
 `eval_search.py` 的用例格式是 `(查询词, 期望 BV 集合, 备注)`：同一首歌在 B 站往往有多个可接受的版本，所以期望值写成集合，命中任意一个即算通过。**新增用例前请务必核实 BV 号确实对应这首歌**，不要凭印象填。
+
+正确的扩充流程是两步，别反着来：
+
+```bash
+python eval_search.py --audit        # 1. 先跑，把 Top5 写进 eval_audit.md
+# 人工核对：哪些 BV 号确实是这首歌？填进 eval_search.py 的 CASES
+python eval_search.py                # 2. 再打分
+```
+
+期望集合为空的用例会被打分模式跳过。千万不要拿程序跑出来的 Top1 反过来填期望值 ——
+那样准确率必然是 100%，评测集就白建了。
 
 `smoke_test.py` 末尾会打印无法自动验证的项目（语音、micro:bit、GUI 对话框、扫码登录等），这些需要手动确认。
 

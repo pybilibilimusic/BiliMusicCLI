@@ -41,3 +41,5 @@ runtime_library.*
 # --- 工作区辅助数据 ---
 .workbuddy/
 .idea/
+# --audit 生成的核对表（每次跑都会重写，确认完请把 BV 号填进 eval_search.py）
+eval_audit.md
