@@ -85,8 +85,9 @@ python main_CUI.py
 | `smoke_test.py` | 冒烟测试：一次性实跑全部可自动验证的功能 |
 | `clean_title_verify.py` | 歌名清洗规则的独立验证用例 |
 | `eval_search.py` | 搜索排序评测：`python eval_search.py` 打分，`--audit` 跑出结果供人工核对 |
+| `eval_confirm.py` | 半自动填期望 BV 号：自动开 B 站搜索页 → 粘链接 → 洗 BV 号 → 反查标题核对 → 写文件（`--apply` 回写） |
 | `microbit_verify.py` | 用虚拟串口验证 micro:bit 协议与串口链路，不需要硬件 |
-| `microbit_live_test.py` | micro:bit 真机联调：连上串口后逐项下发报文、引导按键，双向验证（**需要开发板**） |
+| `microbit_live_test.py` | micro:bit 真机联调：连上串口后逐项下发报文、引导按键，双向验证（**需要开发板**）。结果分四类：通过 / 失败 / 跳过 / **硬件**（板子本身没反应，如 logo 失灵） |
 | `progress_bar.py` | 播放进度条：纯渲染 + 后台刷新线程（生产代码） |
 | `progress_bar_verify.py` | 播放进度条验证：`python progress_bar_verify.py [--file 歌曲] [--demo]` |
 
@@ -289,6 +290,18 @@ python eval_search.py                # 2. 再打分
 
 期望集合为空的用例会被打分模式跳过。千万不要拿程序跑出来的 Top1 反过来填期望值 ——
 那样准确率必然是 100%，评测集就白建了。
+
+一条条手查 BV 号太烦，用 `eval_confirm.py` 半自动做：
+
+```bash
+python eval_confirm.py               # 逐条：自动开 B 站搜索页 -> 你粘链接 -> 它洗 BV 号
+python eval_confirm.py --start 10    # 接着上次的进度
+python eval_confirm.py --apply       # 确认完写回 eval_search.py（改前自动备份）
+```
+
+粘什么都行 —— 完整网址、`b23.tv` 短链、纯 BV 号、`av` 号、B 站 App 分享的那一长串，
+脚本都会洗出 BV 号，再调接口把标题查出来给你二次核对（贴错链接时标题一眼就能看出来）。
+过程中 `q` 随时结束并保存，已确认的部分不会丢，下次接着跑。
 
 `smoke_test.py` 末尾会打印无法自动验证的项目（语音、micro:bit、GUI 对话框、扫码登录等），这些需要手动确认。
 
