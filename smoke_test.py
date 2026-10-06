@@ -513,6 +513,21 @@ def test_initial_setup_login_prompt():
     return "_inquiry 引导逻辑正常（N 跳过 / Y 登录）"
 
 
+def test_eval_confirm():
+    """跑 eval_confirm 的离线自测：粘贴轮次上限 / 空行收工 / 合并去重 / 命令分支。"""
+    import contextlib
+    import io
+    import eval_confirm
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        failed = eval_confirm.selftest()
+    lines = [line.strip() for line in out.getvalue().splitlines() if line.strip()]
+    summary = next((line for line in reversed(lines) if line.startswith("共 ")), "")
+    assert_true(not failed, summary or "自测有失败项")
+    return summary
+
+
 # ------------------------------------------------------------------
 
 GROUPS = [
@@ -524,6 +539,7 @@ GROUPS = [
     ("多线程下载 downloading", "P", test_downloading),
     ("ffmpeg 转换 transform", "P", test_transform),
     ("登录引导 _record_login_choice", "P", test_initial_setup_login_prompt),
+    ("eval_confirm 粘贴流程自测", "P", test_eval_confirm),
     ("WBI 签名 generate_params", "N", test_generate_params),
     ("搜索命中目标视频", "N", test_search_targets),
     ("搜索过滤规则", "N", test_search_filters),
