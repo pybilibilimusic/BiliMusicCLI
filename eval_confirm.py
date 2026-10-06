@@ -10,20 +10,32 @@
     python eval_confirm.py                 # 从第一条待确认的开始
     python eval_confirm.py --start 5       # 跳过前 5 条（接着上次的进度）
     python eval_confirm.py --only 花海     # 只处理包含某个词的用例
+    python eval_confirm.py --rounds 5      # 每条最多粘 5 次（默认 3）
     python eval_confirm.py --no-browser    # 不自动开浏览器（自己已经开着了）
     python eval_confirm.py --apply         # 确认完顺手写回 eval_search.py
+    python eval_confirm.py --selftest      # 离线自测粘贴轮次逻辑（不联网）
 
 逐条流程：
     1. 自动打开 B 站搜索页（关键词就是评测用例的查询词）
     2. 你在浏览器里挑出确实是这首歌的视频，把链接复制回来粘贴
        —— 整段乱贴也行，支持完整网址、b23.tv 短链、纯 BV 号、av 号混着来
     3. 脚本洗出 BV 号，并调 B 站接口把标题查出来给你二次核对
-    4. 确认后记录，结束后写入 eval_confirmed.json（+ 可读版 eval_confirmed.md）
+    4. 一条用例最多粘 MAX_PASTE_ROUNDS 次（默认 3），多轮结果合并去重
+    5. 结束后写入 eval_confirmed.json（+ 可读版 eval_confirmed.md）
+
+为什么要允许多次粘贴：
+    一首歌在 B 站往往有好几个像样的版本（官方 MV、专辑音源、现场、翻唱、
+    不同 UP 主转投）。只锚定一个 BV 号的话，程序返回另一个合理版本会被判
+    失败 —— 分数虚低；反过来只放一个号，又有「碰巧命中」的成分。
+    所以一条用例收一组可接受答案，评测时 Top1 命中其中任意一个就算通过
+    （eval_search.run_one 里就是 `bvid in expected`）。
+    想再补几个版本，就换个说法再搜一轮（比如加「原唱」「官方」），粘回来。
 
 粘贴时的命令（单独一行输入）：
-    s   跳过这条，下次再处理
-    d   这条用例无效（B 站上压根没有这首歌 / 用例本身不合理）
-    q   结束并把已经确认的写进文件
+    空行  够用了，提前结束这条（至少已收 1 个才算；一条没粘则是提示重来）
+    s     跳过这条，下次再处理
+    d     这条用例无效（B 站上压根没有这首歌 / 用例本身不合理）
+    q     结束并把已经确认的写进文件
 
 ⚠️ 期望值是你确认的，不是程序跑出来的。脚本只负责洗链接和查标题，
    不会自己挑一个「看起来对」的 BV 号填进去。
@@ -50,6 +62,10 @@ MD_FILE = os.path.join(HERE, "eval_confirmed.md")
 
 SEARCH_URL = "https://search.bilibili.com/all?keyword=%s"
 VIEW_API = "https://api.bilibili.com/x/web-interface/view"
+
+# 一条用例最多粘几次。同一首歌往往有多个合理版本，多给几次机会把
+# 「可接受答案」凑全一点，评测时 Top1 命中其中任意一个就算通过。
+MAX_PASTE_ROUNDS = 3
 
 # BV 号：BV + 10 位字母数字。前后加边界，避免从更长的串里截出半截
 BV_RE = re.compile(r"(?<![0-9A-Za-z])BV[0-9A-Za-z]{10}(?![0-9A-Za-z])")
@@ -258,49 +274,85 @@ def read_paste():
         lines.append(line)
 
 
-def one_case(index, total, keyword, note, use_browser):
+def ask_line(prompt="  > "):
+    """读一行；EOF 一律当成 q（结束保存）。"""
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        return "q"
+
+
+def one_case(index, total, keyword, note, use_browser, round_no, max_rounds,
+             collected):
+    """打印一轮提示并读一段粘贴。返回 (blob, command)。"""
     print()
     print("=" * 72)
-    print("[%d/%d] %s" % (index, total, keyword))
+    head = "[%d/%d] %s" % (index, total, keyword)
+    if collected:
+        head += "    第 %d/%d 次粘贴，已收 %d 个" % (round_no, max_rounds,
+                                                 len(collected))
+    else:
+        head += "    第 %d/%d 次粘贴" % (round_no, max_rounds)
+    print(head)
     if note:
         print("       %s" % note)
 
-    url = SEARCH_URL % urllib.parse.quote_plus(keyword)
-    print("\n  搜索页：%s" % url)
-    if use_browser:
-        try:
-            webbrowser.open(url)
-            print("  （已尝试用默认浏览器打开；没弹出来就把上面这行复制到地址栏）")
-        except Exception as exc:
-            print("  打开浏览器失败：%s" % exc)
+    if round_no == 1:
+        url = SEARCH_URL % urllib.parse.quote_plus(keyword)
+        print("\n  搜索页：%s" % url)
+        if use_browser:
+            try:
+                webbrowser.open(url)
+                print("  （已尝试用默认浏览器打开；没弹出来就把上面这行复制到地址栏）")
+            except Exception as exc:
+                print("  打开浏览器失败：%s" % exc)
+        print("\n  在搜索结果里挑出确实是这首歌的，把链接粘回来。")
+        print("  整段乱贴也行（网址 / b23.tv 短链 / BV 号 / av 号都能认）。")
+        print("  粘完按一次回车、再按一次空回车结束这一轮。")
+    else:
+        print("\n  想再补几个版本，就换个说法再搜一轮（加「原唱」「官方 MV」之类），")
+        print("  把新的链接粘回来；不补了就直接空回车收工。")
 
-    print("\n  在搜索结果里挑出确实是这首歌的，把链接粘回来。")
-    print("  整段乱贴也行（网址 / b23.tv 短链 / BV 号 / av 号都能认）。")
-    print("  粘完按一次回车、再按一次空回车结束。")
+    print("  同一首歌的多个版本都会算作期望值，评测时命中任意一个即通过。")
+    tail = "（还能再粘 %d 次）" % (max_rounds - round_no)
+    if round_no >= max_rounds:
+        tail = "（这是最后一次了）"
+    print("  这条最多粘 %d 次 %s" % (max_rounds, tail))
+    if collected:
+        print("  已收：%s" % ", ".join(collected))
     print("  单独输入 s=跳过  d=这条用例无效  q=结束保存")
 
-    blob, command = read_paste()
-    return blob, command
+    return read_paste()
 
 
-def confirm_bvids(keyword, bvids):
-    """把 BV 号对应的标题查出来给人核对，允许删掉查错的。"""
+def confirm_bvids(keyword, bvids, existing=()):
+    """
+    把 BV 号对应的标题查出来给人核对，允许删掉查错的。
+
+    返回 (采纳的 BV 号, action)，action 为 None / "retry" / "skip"。
+    existing 是前几轮已经收下的，重复的不重复计入。
+    """
+    existing = list(existing)
     while True:
         print("\n  洗出 %d 个 BV 号，调接口核对标题：" % len(bvids))
         infos = []
         for bvid in bvids:
             info = bvid_to_info(bvid)
             infos.append(info)
+            flag = "（已有）" if bvid in existing else ""
             if info:
-                print("    [%d] %s  %s  | %s | UP %s"
-                      % (len(infos), bvid, fmt_duration(info["duration"]),
+                print("    [%d] %s%s  %s  | %s | UP %s"
+                      % (len(infos), bvid, flag, fmt_duration(info["duration"]),
                          info["title"][:44], info["uploader"][:16]))
             else:
-                print("    [%d] %s  （接口查不到，可能已失效）" % (len(infos), bvid))
+                print("    [%d] %s%s  （接口查不到，可能已失效）"
+                      % (len(infos), bvid, flag))
             time.sleep(0.3)
 
-        print("\n  Y = 全部采纳；输入序号（如 2 或 2,3）删掉不对的；"
-              "r = 重新粘贴；s = 跳过这条")
+        if all(b in existing for b in bvids):
+            print("\n  这些之前都收过了。要补别的版本就重新粘贴，不需要就空行收工。")
+        print("\n  Y = 全部采纳（都会算作这条用例的可接受答案）；"
+              "输入序号（如 2 或 2,3）删掉不对的；r = 重新粘贴；s = 跳过这条")
         choice = input("  确认？[Y] ").strip().lower()
         if choice in ("", "y", "yes"):
             return bvids, None
@@ -320,10 +372,204 @@ def confirm_bvids(keyword, bvids):
         bvids = kept
 
 
+def merge_bvids(base, extra):
+    """合并两批 BV 号，保序去重。"""
+    merged, seen = [], set()
+    for bvid in list(base) + list(extra):
+        if bvid and bvid not in seen:
+            seen.add(bvid)
+            merged.append(bvid)
+    return merged
+
+
+def collect_for_case(index, total, keyword, note, use_browser,
+                     max_rounds=MAX_PASTE_ROUNDS):
+    """
+    跑完一条用例：最多粘 max_rounds 次，多轮结果合并；空行可提前收工。
+
+    返回 (action, bvids)：
+        "ok"   收下，bvids 是这条的可接受答案集合
+        "skip" 一条都没收才算跳过；已经收了东西的按ok处理（不然前面白粘）
+        "drop" 这条用例无效
+        "quit" 结束整个流程
+    """
+    def finish_or_skip():
+        """说跳过但已经收过东西 —— 那就当收工，别把前面的辛苦丢掉。"""
+        if collected:
+            print("  保留已收的 %d 个，这条到此为止。" % len(collected))
+            return "ok", collected
+        return "skip", None
+
+    collected = []
+    used = 0
+    while used < max_rounds:
+        blob, command = one_case(index, total, keyword, note, use_browser,
+                                 used + 1, max_rounds, collected)
+        if command == "q":
+            return "quit", None
+        if command == "s":
+            return finish_or_skip()
+        if command == "d":
+            return "drop", None
+
+        if not blob.strip():
+            if collected:
+                print("  够用了 —— 这条收 %d 个期望 BV 号。" % len(collected))
+                return "ok", collected
+            print("  这轮没粘东西。至少粘一条链接；"
+                  "跳过输 s，判无效输 d，收工输 q。（空行不占粘贴次数）")
+            continue
+
+        used += 1
+        bvids = extract_bvids(blob)
+        if not bvids:
+            print("  没洗出任何 BV 号。检查下粘的是不是 B 站链接？")
+            again = ask_line("  重来 r / 跳过 s / 判无效 d：[r] ").lower()
+            used -= 1                       # 没认出来不算一次
+            if again == "s":
+                return finish_or_skip()
+            if again == "d":
+                return "drop", None
+            continue
+
+        kept, action = confirm_bvids(keyword, bvids, collected)
+        if action == "retry":
+            used -= 1
+            continue
+        if action == "skip":
+            return finish_or_skip()
+
+        before = len(collected)
+        collected = merge_bvids(collected, kept)
+        print("  本轮新增 %d 个，累计 %d 个。"
+              % (len(collected) - before, len(collected)))
+
+    print("  已达 %d 次上限，这条收 %d 个。" % (max_rounds, len(collected)))
+    return "ok", collected
+
+
+def selftest():
+    """
+    离线自测粘贴轮次逻辑：不联网、不开浏览器，用假按键把交互整跑一遍。
+
+    验的是这几条规则：
+      1. 一条用例最多粘 N 次，粘满就停，不再多问
+      2. 空行能提前收工
+      3. 多轮结果合并去重
+      4. 什么都没粘的空行 / 认不出链接，都不占次数
+      5. s / d / q 三个命令、删序号，都还灵
+    """
+    import builtins
+    import contextlib
+    import io
+
+    # 通过 globals() 换掉这两个，别用 global 关键字：那样会和赋值打架
+    ns = globals()
+    real_sleep, real_info = time.sleep, ns["bvid_to_info"]
+    time.sleep = lambda *_args: None
+    ns["bvid_to_info"] = lambda bvid: {"bvid": bvid, "title": "测试标题 " + bvid,
+                                       "uploader": "测试UP", "duration": 214}
+
+    checks = []
+
+    def record(name, ok, detail=""):
+        checks.append((name, ok, detail))
+
+    def run_lines(lines, max_rounds=MAX_PASTE_ROUNDS):
+        """
+        喂一串假按键，静音跑一条用例。
+
+        返回 (action, bvids, 剩余没用上的按键数, 打印出来的内容)。
+        写的时候要卡死的那种提问会直接抛 AssertionError —— 比如粘满 3 次后
+        还在问第 4 次，说明上限没生效。
+        """
+        feed = list(lines)
+        asked = {"n": 0}
+
+        def fake_input(prompt=""):
+            asked["n"] += 1
+            if not feed:
+                raise AssertionError("还在问第 %d 次：%s" % (asked["n"], prompt))
+            return feed.pop(0)
+
+        real_input = builtins.input
+        builtins.input = fake_input
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                action, bvids = collect_for_case(1, 1, "测试歌", "自测用例",
+                                                 False, max_rounds)
+        except AssertionError as exc:
+            # 按键喂完了还在问 —— 多半是该停的时候没停
+            return "stuck", None, len(feed), "%s\n  %s" % (out.getvalue(), exc)
+        finally:
+            builtins.input = real_input
+        return action, bvids, len(feed), out.getvalue()
+
+    A, B, C = "BV1Aa1111111", "BV1Bb2222222", "BV1Cc3333333"
+
+    # 1. 粘满 3 次：收 3 个，配额用完就停（输入恰好耗尽，没多问）
+    action, bvids, leftover, _ = run_lines([A, "", "", B, "", "", C, "", ""])
+    record("粘满 3 次收 3 个", action == "ok" and bvids == [A, B, C],
+           "%s / %s" % (action, bvids))
+    record("达到上限即停止提问", action == "ok" and leftover == 0,
+           "%s / 还剩 %d 条按键没用到" % (action, leftover))
+
+    # 2. 第一轮粘完直接空行 -> 提前收工
+    action, bvids, leftover, _ = run_lines([A, "", "", ""])
+    record("空行可提前收工", action == "ok" and bvids == [A],
+           "%s / %s" % (action, bvids))
+
+    # 3. 多轮有重复 -> 合并去重（最后一轮空行收工）
+    action, bvids, leftover, _ = run_lines([A, "", "", A + " " + B, "", "", ""])
+    record("多轮合并去重", action == "ok" and bvids == [A, B], str(bvids))
+
+    # 4. 什么都没粘的空行不算次数，提示后接着来
+    action, bvids, leftover, _ = run_lines(["", A, "", "", ""])
+    record("空粘贴不占次数", action == "ok" and bvids == [A], str(bvids))
+
+    # 5. 认不出 BV 号 -> 提示后按 s 跳过
+    action, bvids, leftover, out = run_lines(["这不是链接", "", "s"])
+    record("认不出链接可跳过", action == "skip", str(action))
+
+    # 6. 命令仍然有效；但已经收过东西时的 s 按收工算，不吃掉前面的成果
+    action, bvids, leftover, _ = run_lines([A, "", "", "s"])
+    record("已收货后按 s 不丢成果", action == "ok" and bvids == [A],
+           "%s / %s" % (action, bvids))
+    record("d = 判用例无效", run_lines(["d"])[0] == "drop")
+    record("s = 跳过", run_lines(["s"])[0] == "skip")
+    record("q = 结束保存", run_lines([A, "", "", "q"])[0] == "quit")
+
+    # 7. 删序号：粘两个删掉第 2 个
+    action, bvids, leftover, _ = run_lines([A + " " + B, "", "2", "", ""])
+    record("删序号生效", action == "ok" and bvids == [A], str(bvids))
+
+    # 8. --rounds 能改上限：上限设 1 时，粘 1 次就收工
+    action, bvids, leftover, _ = run_lines([A, "", ""], max_rounds=1)
+    record("--rounds=1 时只粘一次", action == "ok" and bvids == [A], str(bvids))
+
+    time.sleep, ns["bvid_to_info"] = real_sleep, real_info
+
+    print("=" * 72)
+    print("eval_confirm 自测（离线，不联网不弹浏览器）")
+    print("=" * 72)
+    failed = 0
+    for name, ok, detail in checks:
+        print("  [%s] %s%s" % ("OK" if ok else "FAIL", name,
+                               "" if ok else "   -> " + str(detail)))
+        failed += 0 if ok else 1
+    print("-" * 72)
+    print("共 %d 项：通过 %d / 失败 %d" % (len(checks), len(checks) - failed,
+                                     failed))
+    print("=" * 72)
+    return 1 if failed else 0
+
+
 def main():
     argv = sys.argv[1:]
     start = 0
     only = None
+    rounds = MAX_PASTE_ROUNDS
     use_browser = "--no-browser" not in argv
     do_apply = "--apply" in argv
     for arg in argv:
@@ -331,9 +577,13 @@ def main():
             start = int(arg.split("=", 1)[1])
         elif arg.startswith("--only="):
             only = arg.split("=", 1)[1]
+        elif arg.startswith("--rounds="):
+            rounds = int(arg.split("=", 1)[1])
         elif arg.startswith("--start"):
             idx = argv.index(arg)
             start = int(argv[idx + 1]) if idx + 1 < len(argv) else 0
+    if rounds < 1:
+        rounds = 1
 
     cases = eval_search.CASES
     data = load_confirmed()
@@ -359,46 +609,31 @@ def main():
     print("待确认 %d 条%s" % (len(pending),
                             "（还有 %d 条之前已确认）" % (len(data) - len(pending))
                             if len(data) > len(pending) else ""))
+    print("每条最多粘 %d 次，多轮结果合并；空行可提前收工。"
+          "评测时命中其中任意一个即通过。" % rounds)
     print("=" * 72)
 
     for offset, (keyword, note) in enumerate(pending, 1):
-        while True:
-            blob, command = one_case(offset, len(pending), keyword, note,
-                                     use_browser)
-            if command == "q":
-                save_confirmed(data)
-                write_markdown(data, cases)
-                print("\n已保存 %d 条 -> %s" % (len(data), JSON_FILE))
-                return 0
-            if command == "s":
-                print("  跳过。")
-                break
-            if command == "d":
-                data[keyword] = {"dropped": True, "bvids": []}
-                print("  已标记为无效用例。")
-                save_confirmed(data)
-                break
-
-            bvids = extract_bvids(blob)
-            if not bvids:
-                print("  没洗出任何 BV 号。检查下粘的是不是 B 站链接？"
-                      "（r=重来 s=跳过）")
-                again = input("  > ").strip().lower()
-                if again == "r":
-                    continue
-                if again == "s":
-                    break
-                continue
-
-            kept, action = confirm_bvids(keyword, bvids)
-            if action == "retry":
-                continue
-            if action == "skip":
-                break
-            data[keyword] = {"bvids": kept, "dropped": False}
+        action, bvids = collect_for_case(offset, len(pending), keyword, note,
+                                         use_browser, rounds)
+        if action == "quit":
             save_confirmed(data)
-            print("  [OK] %s -> %s" % (keyword, ", ".join(kept)))
-            break
+            write_markdown(data, cases)
+            print("\n已保存 %d 条 -> %s" % (len(data), JSON_FILE))
+            return 0
+        if action == "skip":
+            print("  跳过。")
+            continue
+        if action == "drop":
+            data[keyword] = {"dropped": True, "bvids": []}
+            print("  已标记为无效用例。")
+            save_confirmed(data)
+            continue
+
+        data[keyword] = {"bvids": bvids, "dropped": False}
+        save_confirmed(data)
+        print("  [OK] %s -> %s（命中其一即通过）"
+              % (keyword, ", ".join(bvids)))
 
     save_confirmed(data)
     write_markdown(data, cases)
@@ -421,4 +656,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        sys.exit(selftest())
     sys.exit(main())
