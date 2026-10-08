@@ -45,3 +45,7 @@ runtime_library.*
 # --audit / eval_confirm 生成的工作文件（确认结果请落进 eval_search.py）
 eval_audit.md
 eval_confirmed.md
+eval_confirmed.json
+
+# 搜索反馈埋点收集到的本地数据（feedback.db 是使用者自己的选择记录，不进版本库）
+feedback.db

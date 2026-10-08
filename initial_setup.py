@@ -32,6 +32,9 @@ class InitialSetup:
         self.config['threads'] = {'threads': '4'}   # Number of download threads
         self.config['audio'] = {'input_device_index': '-1'}  #Default index of microphone
         self.config['microbit'] = {'port': ''}
+        # 搜索反馈埋点：默认开着，随时能在 config.ini 里关掉。
+        # 只记录本地的搜索选择（见 feedback.py），不记账号、不上传。
+        self.config['feedback'] = {'enabled': '1'}
 
     def _setup_directories(self):
         """Create all required directories from config (create parents if needed)"""

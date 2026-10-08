@@ -488,7 +488,7 @@ def test_main_cui():
     cui.cmd_register()
     expected = {'help', 'download', 'voice', 'search', 'cache', 'login', 'exit',
                 'pause', 'transform', 'batch_transform', 'batch_search',
-                'batch_extract', 'reconnect'}
+                'batch_extract', 'reconnect', 'progress', 'feedback'}
     missing = expected - set(cui.commands)
     assert_true(not missing, f"命令缺失: {missing}")
     # help 命令能正常出结果
@@ -528,6 +528,134 @@ def test_eval_confirm():
     return summary
 
 
+def test_feedback():
+    """
+    搜索反馈埋点：假搜索结果 + 假按键，把 interactive_search 的几种走法跑一遍。
+
+    验的是「用户做了什么动作 -> 记成什么标签」，这是后面所有分析的入口，
+    记错了数据就全废，所以值得单独盯住。用临时库，不碰真实数据。
+    """
+    import builtins
+    import contextlib
+    import io
+    import shutil
+    import feedback as fb
+    import song_search
+
+    def assert_row(row, action, index, bvid, source="cli"):
+        return (row[1] == action and row[2] == index
+                and row[4] == bvid and row[3] == source)
+
+    cands = [
+        {"bvid": "BV1TOP00001", "title": "歌A 官方版", "clean": "歌A 官方版",
+         "duration": 240, "typename": "音乐", "play": 100000, "score": 150},
+        {"bvid": "BV1OTHER002", "title": "歌A 现场版", "clean": "歌A 现场版",
+         "duration": 260, "typename": "音乐", "play": 5000, "score": 120},
+    ]
+
+    tmp = tempfile.mkdtemp(prefix="smoke_feedback_")
+    db = os.path.join(tmp, "feedback.db")
+    real_db = fb.DB_PATH
+    try:
+        def run_keys(script, source="cli"):
+            feed = list(script)
+
+            def fake_input(prompt=""):
+                if not feed:
+                    raise AssertionError("还在问：" + prompt)
+                return feed.pop(0)
+
+            real_input = builtins.input
+            real_rank = song_search.SongSearch.rank
+            real_fetch = song_search.SongSearch._search
+            builtins.input = fake_input
+            song_search.SongSearch.rank = lambda self, items: cands
+            song_search.SongSearch._search = lambda self, retry=0: []
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    fb.reset()
+                    fb.DB_PATH = db
+                    searcher = song_search.SongSearch(
+                        prompt="歌A", timeout=0, source=source)
+                    result = searcher.interactive_search()
+            finally:
+                builtins.input = real_input
+                song_search.SongSearch.rank = real_rank
+                song_search.SongSearch._search = real_fetch
+            return result
+
+        def rows():
+            if not os.path.exists(db):
+                return []
+            with sqlite3.connect(db) as conn:
+                return conn.execute(
+                    "SELECT query, action, picked_index, source, chosen_bvid "
+                    "FROM search_events ORDER BY id").fetchall()
+
+        # 直接回车 -> accept / 第 0 个 / Top1
+        result = run_keys([""])
+        got = rows()
+        assert_true(len(got) == 1 and assert_row(got[0], "accept", 0,
+                                                 "BV1TOP00001"), str(got))
+        assert_true(result == ("BV1TOP00001", "歌A 官方版"), str(result))
+
+        # 输入 1 跟回车等价，也算认可
+        run_keys(["1"])
+        got = rows()
+        assert_true(assert_row(got[-1], "accept", 0, "BV1TOP00001"), str(got[-1]))
+
+        # 选第 2 个 -> pick，位次记 1，chosen 是第 2 条
+        result = run_keys(["2"])
+        got = rows()
+        assert_true(assert_row(got[-1], "pick", 1, "BV1OTHER002"), str(got[-1]))
+        assert_true(result == ("BV1OTHER002", "歌A 现场版"), str(result))
+
+        # q 取消 -> cancel，位次 -1，不返回视频
+        result = run_keys(["q"])
+        got = rows()
+        assert_true(assert_row(got[-1], "cancel", -1, ""), str(got[-1]))
+        assert_true(result == (None, None), str(result))
+
+        # r 翻页 -> 先记一条 page，下一页接着问
+        run_keys(["r", ""])
+        actions = [row[1] for row in rows()]
+        assert_true("page" in actions and actions[-1] == "accept", str(actions))
+
+        # 来源要能区分：语音埋点不能被当成手动搜索
+        fb.reset()
+        fb.DB_PATH = db
+        fb.record("歌B", "auto", candidates=cands, picked_index=0,
+                  chosen=cands[0], source="voice")
+        got = rows()
+        assert_true(assert_row(got[-1], "auto", 0, "BV1TOP00001", "voice"),
+                    str(got[-1]))
+
+        # 统计口径跟原始记录一致
+        fb.reset()
+        fb.DB_PATH = db
+        data = fb.FeedbackStore(db_path=db).stats()
+        positive = sum(1 for row in rows() if row[1] in ("accept", "auto"))
+        assert_true(data["positive"] == positive
+                    and data["total"] == len(rows()),
+                    "%d/%d vs %d/%d" % (data["positive"], data["total"],
+                                        positive, len(rows())))
+
+        # 关掉开关后一个字都不该写
+        before = len(rows())
+        off_db = os.path.join(tmp, "off.db")
+        fb.FeedbackStore(db_path=off_db, enabled=False).record(
+            "关了", "accept", candidates=cands, picked_index=0)
+        assert_true(len(rows()) == before and not os.path.exists(off_db),
+                    "关掉后仍有写入")
+
+        return "埋点 %d 条，动作/位次/来源/统计口径都对；关掉时不落库" % before
+    finally:
+        fb.DB_PATH = real_db
+        fb.reset()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ------------------------------------------------------------------
 
 GROUPS = [
@@ -540,6 +668,7 @@ GROUPS = [
     ("ffmpeg 转换 transform", "P", test_transform),
     ("登录引导 _record_login_choice", "P", test_initial_setup_login_prompt),
     ("eval_confirm 粘贴流程自测", "P", test_eval_confirm),
+    ("搜索反馈埋点 feedback", "P", test_feedback),
     ("WBI 签名 generate_params", "N", test_generate_params),
     ("搜索命中目标视频", "N", test_search_targets),
     ("搜索过滤规则", "N", test_search_filters),
