@@ -19,6 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 
 import config
+import feedback as fb
 import title_cleaner
 
 # 接口地址
@@ -97,9 +98,11 @@ class SongSearch:
         "历史", "公开课", "课堂", "职场", "设计创意", "广告",
     }
 
-    def __init__(self, prompt: str, timeout: int = 0):
+    def __init__(self, prompt: str, timeout: int = 0, source: str = "cli"):
         self.prompt = prompt
         self.timeout = timeout if timeout and timeout > 0 else 10
+        # 来源只用于埋点区分：cli=手动 search 命令，voice=语音点歌，batch=批量模式
+        self.source = source or "cli"
 
     # ---------- 数据获取 ----------
 
@@ -379,27 +382,40 @@ class SongSearch:
                 print(f"     {' | '.join(extra)}")
         print("输入编号选择（直接回车用第一条），'r' 翻页，'q' 退出：", end="", flush=True)
 
+        # 埋点：把用户本来就做的动作记下来（记失败也不影响选歌）。
+        # picked_index 是 0-based —— 选第 1 个就记 0。
+        def remember(action, item=None, index=-1):
+            fb.record(self.prompt, action, candidates=candidates,
+                      picked_index=index, chosen=item, page=retry,
+                      source=self.source)
+            if item is None:
+                return None, None
+            return item["bvid"], item.get("clean") or item["title"]
+
         while True:
             user_input = input().strip().lower()
             if user_input == "q":
                 print("已取消搜索。")
-                return None, None
+                return remember("cancel")
             if user_input == "r":
                 if retry >= 4:
                     print("翻页次数过多，已结束搜索。")
-                    return None, None
+                    return remember("cancel")
                 print("加载下一页...")
+                remember("page")
                 return self.interactive_search(retry=retry + 1)
             if user_input == "":
                 best = candidates[0]
                 print(f"使用最佳结果：{best.get('clean') or best['title']}")
-                return best["bvid"], best.get("clean") or best["title"]
+                return remember("accept", best, 0)
             if user_input.isdigit():
                 choice = int(user_input)
                 if 1 <= choice <= len(candidates):
                     picked = candidates[choice - 1]
                     print(f"已选择：{picked.get('clean') or picked['title']}")
-                    return picked["bvid"], picked.get("clean") or picked["title"]
+                    # 选第 1 个和直接回车是一回事 —— 都算认可推荐
+                    action = "accept" if choice == 1 else "pick"
+                    return remember(action, picked, choice - 1)
                 print(f"编号无效，请输入 1-{len(candidates)}。")
             else:
                 print("输入无效，请输入数字、'r' 或 'q'。")

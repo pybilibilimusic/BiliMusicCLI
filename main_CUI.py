@@ -13,6 +13,7 @@ from pathlib import Path
 import requests
 
 import config
+import feedback as fb
 import song_search
 import download_audio
 import select_file
@@ -212,6 +213,10 @@ class MainCui:
         # Version switching
         self.current_candidates = []
         self.current_index = -1
+        self.current_query = ""
+
+        # 搜索来源（只用于反馈埋点区分：cli / voice / batch）
+        self.search_source = "cli"
 
         # Configuration parameters
         self.threads = None
@@ -315,10 +320,18 @@ class MainCui:
         Returns:
             tuple: (best_bvid, best_title, full_list)
         """
-        searcher = song_search.SongSearch(prompt=song_name, timeout=0)
+        searcher = song_search.SongSearch(prompt=song_name, timeout=0,
+                                          source=self.search_source)
         best_bvid, best_title, full_list = searcher.search()
         self.current_candidates = full_list
         self.current_index = 0
+        self.current_query = song_name
+        # 语音 / 批量模式没办法当场问用户「是不是这首」，所以这里记一条「默认认可」；
+        # 真不满意的话，用户会喊「换个版本」，那条记录会把这条抵消掉（-1/+1 配平）。
+        if best_bvid:
+            fb.record(song_name, "auto", candidates=full_list, picked_index=0,
+                      chosen=full_list[0] if full_list else None,
+                      source=self.search_source)
         return best_bvid, best_title, full_list
 
     def _play_by_bvid(self, bvid, title):
@@ -378,9 +391,16 @@ class MainCui:
         if not self.current_candidates or len(self.current_candidates) <= 1:
             print(self._('no_other_versions'))
             return
+        rejected_index = self.current_index
+        rejected = self.current_candidates[rejected_index]
         self.current_index = (self.current_index + 1) % len(self.current_candidates)
         next_item = self.current_candidates[self.current_index]
         print(self._('switching_to_version').format(next_item['title']))
+        # 用户嫌这个版本不对 —— 最强的负样本信号，一定要记下来
+        fb.record(self.current_query or "", "switch",
+                  candidates=self.current_candidates,
+                  picked_index=rejected_index, chosen=rejected,
+                  source="voice")
         self.player.stop()
         self._play_by_bvid(next_item['bvid'], next_item['title'])
 
@@ -393,6 +413,7 @@ class MainCui:
 
         self.song_queue = queue.Queue()
         self.stop_voice_flag = False
+        self.search_source = "voice"      # 埋点：区分语音点歌和手动搜索
 
         print(self._('loading_voice_model'))
 
@@ -445,6 +466,7 @@ class MainCui:
             if self.voice_thread:
                 self.voice_thread.join(timeout=2)
             print(self._('voice_exited'))
+            self.search_source = "cli"
 
     # ---------- Other commands ----------
     def cmd_cache(self, args):
@@ -632,6 +654,27 @@ class MainCui:
         else:
             print(self._('cancelled'))
 
+    def cmd_feedback(self, args):
+        """Show (or clear) the search feedback collected while using the app."""
+        if args and args[0].lower() == "clear":
+            try:
+                import sqlite3
+
+                with sqlite3.connect(fb.DB_PATH) as conn:
+                    conn.execute("DELETE FROM search_events")
+                fb.reset()                      # 让它下次重新读配置
+                print(self._('feedback_cleared'))
+            except Exception as exc:
+                print(self._('feedback_clear_failed').format(exc))
+            return
+
+        if not fb.config_enabled():
+            print(self._('feedback_disabled'))
+            return
+        fb.store().summarize(lang_code=self.lang_code)
+        print()
+        print(self._('feedback_hint'))
+
     def cmd_reconnect(self, args):
         """Manually reconnect micro:bit"""
         if not self.microbit_port:
@@ -661,27 +704,31 @@ class MainCui:
                 print(self._('no_files_to_convert'))
                 return
             print(self._('batch_search_start').format(len(lines)))
-            for idx, line in enumerate(lines, 1):
-                print(self._('processing_item').format(idx, len(lines), line))
-                if 'bilibili.com/video/' in line and 'BV' in line:
-                    print(self._('detected_url_downloading'))
-                    self.cmd_download([line])
-                    print(self._('download_finished'))
-                    continue
-                while True:
-                    choice = input(self._('prompt_auto_mode')).strip().lower()
-                    if choice == 'y':
-                        self._process_song(line)
-                        break
-                    elif choice == 'n':
-                        parts = line.split()
-                        self.cmd_search(parts)
-                        break
-                    elif choice == 's':
-                        print(self._('cancelled'))
-                        break
-                    else:
-                        print(self._('invalid_input_yns'))
+            self.search_source = "batch"   # 埋点：批量模式的自动选择单独归类
+            try:
+                for idx, line in enumerate(lines, 1):
+                    print(self._('processing_item').format(idx, len(lines), line))
+                    if 'bilibili.com/video/' in line and 'BV' in line:
+                        print(self._('detected_url_downloading'))
+                        self.cmd_download([line])
+                        print(self._('download_finished'))
+                        continue
+                    while True:
+                        choice = input(self._('prompt_auto_mode')).strip().lower()
+                        if choice == 'y':
+                            self._process_song(line)
+                            break
+                        elif choice == 'n':
+                            parts = line.split()
+                            self.cmd_search(parts)
+                            break
+                        elif choice == 's':
+                            print(self._('cancelled'))
+                            break
+                        else:
+                            print(self._('invalid_input_yns'))
+            finally:
+                self.search_source = "cli"
         except Exception as e:
             print(self._('unexpected_error').format(e))
 
@@ -1084,6 +1131,8 @@ class MainCui:
                               brief=self._('cmd_login_brief'), usage=self._('cmd_login_usage'))
         self.register_command('progress', self.cmd_progress,
                               brief=self._('cmd_progress_brief'), usage=self._('cmd_progress_usage'))
+        self.register_command('feedback', self.cmd_feedback,
+                              brief=self._('cmd_feedback_brief'), usage=self._('cmd_feedback_usage'))
 
     def main_cui(self):
         """Main event loop for command-line interaction."""
