@@ -23,7 +23,10 @@ import time
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+ROOT = Path(__file__).parent
+sys.path.insert(0, str(ROOT))
+# 评测类脚本收在 review/ 子目录（eval_confirm / eval_search）
+sys.path.insert(0, str(ROOT / "review"))
 
 RESULTS = []
 

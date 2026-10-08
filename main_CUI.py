@@ -12,6 +12,11 @@ from pathlib import Path
 
 import requests
 
+# micro:bit 那套（microbit_bridge 等）收在 microbit/ 子目录里，
+# 加进模块搜索路径，下面 `import microbit_bridge` 才找得到。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "microbit"))
+
 import config
 import feedback as fb
 import song_search
