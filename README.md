@@ -75,6 +75,7 @@ python main_CUI.py
 | `microbit/microbit_remote.py` | **跑在开发板上**的 MicroPython 参考实现（不是给电脑 Python 用的） |
 | `microbit/stub_microbit.py` | 上面那个固件的模拟层：假 display / 按键 / 串口 + 虚拟时钟 |
 | `microbit/check_remote.py` | 用模拟层离线跑一遍固件，刷板前先验证（无需开发板） |
+| `microbit/diagnose.py` | 板子「不收消息 / 没反应」时的一键链路诊断：找板子 → 原样监听 → REPL 探测 → 下发测试，最后直接给结论 |
 | `microbit/hex_sync.py` | 校验 / 重新打包固件 hex，防止 `.py` 改了而 hex 没跟上 |
 | `VoiceRecognition.py` | Silero VAD + FunASR 唤醒词与指令识别 |
 | `transform.py` | 调用 ffmpeg 做格式转换 |
@@ -264,6 +265,7 @@ python smoke_test.py                    # 全量冒烟测试（含下载链路�
 python microbit/check_remote.py         # micro:bit 板端固件（模拟运行，无需开发板）
 python microbit/microbit_verify.py      # micro:bit 主机侧协议（loop:// 虚拟串口，无需开发板）
 python microbit/microbit_live_test.py   # micro:bit 真机联调（需要插着板子，交互式）
+python microbit/diagnose.py             # 板子没反应时的一键链路诊断（会直接给结论）
 python progress_bar_verify.py           # 播放进度条；--file 指定歌曲，--demo 看刷新干扰
 ```
 
@@ -280,6 +282,15 @@ python microbit/microbit_live_test.py --auto     # 无人值守：跳过一切�
 
 它会逐项打印「现在请按什么、屏幕上应该出现什么」，按键类会实时等待板子的回应。
 注意串口一次只能被一个程序占用，跑之前把 Mu / Thonny / 串口助手都关掉。
+
+板子突然「没反应 / 不收消息」时先跑 `python microbit/diagnose.py`：
+它按层测一遍 —— USB 认不认得 → 板子开不开口 → 是不是掉进 REPL → 下发报文看屏幕，
+最后直接给结论和下一步，省得一层层手动试。
+
+刷固件的两条路里，**V2.2 建议用官方编辑器**（python.microbit.org 里新建项目、
+把 `microbit/microbit_remote.py` 整份粘进去、下载 hex 拖到 MICROBIT 盘）。
+`hex_sync.py --regen` 走的是 uflash 自带的 MicroPython 2.0.0-beta.5，
+这个 runtime 在 V2.2 上偶尔会出现「COM 口认得、但数据一个字节都不通」。
 
 ## 搜索反馈埋点（现在在用的办法）
 
