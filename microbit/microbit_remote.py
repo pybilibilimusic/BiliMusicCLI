@@ -536,4 +536,9 @@ def main():
         sleep(LOOP_DELAY_MS)
 
 
-main()
+try:
+    main()
+except Exception as exc:        # 真机崩了只有哭脸+数字，把原因从串口报出去
+    if type(exc).__name__ != "LoopStopped":     # 离线模拟层结束主循环的哨兵，不是崩溃
+        send("PANIC:%s:%s" % (type(exc).__name__, exc))
+    raise
