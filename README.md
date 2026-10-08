@@ -62,6 +62,8 @@ python main_CUI.py
 
 | 文件 | 职责 |
 | --- | --- |
+| `microbit/` | micro:bit 相关的一整套：桥接模块、板端固件、校验与真机联调脚本 |
+| `review/` | 评测与人工复核类脚本（搜索评测集、期望 BV 号确认），**暂搁置**，原因见「搜索反馈埋点」 |
 | `main_CUI.py` | 主控：命令注册、主循环、各子流程 |
 | `song_search.py` | 搜索与排序（官方接口优先，网页解析降级） |
 | `download_audio.py` | 取音频流（WBI 签名 → playurl）并下载 |
@@ -69,7 +71,7 @@ python main_CUI.py
 | `generate_params.py` | B 站 WBI 签名（动态取密钥） |
 | `cache_manager.py` | SQLite 歌曲缓存 |
 | `player.py` | mpv 播放封装，播完自动切下一首；含音量与进度读取 |
-| `microbit_bridge.py` | micro:bit 串口桥接：协议编解码 + 回调分发 |
+| `microbit/microbit_bridge.py` | micro:bit 串口桥接：协议编解码 + 回调分发 |
 | `microbit/microbit_remote.py` | **跑在开发板上**的 MicroPython 参考实现（不是给电脑 Python 用的） |
 | `microbit/stub_microbit.py` | 上面那个固件的模拟层：假 display / 按键 / 串口 + 虚拟时钟 |
 | `microbit/check_remote.py` | 用模拟层离线跑一遍固件，刷板前先验证（无需开发板） |
@@ -85,10 +87,10 @@ python main_CUI.py
 | `smoke_test.py` | 冒烟测试：一次性实跑全部可自动验证的功能 |
 | `clean_title_verify.py` | 歌名清洗规则的独立验证用例 |
 | `feedback.py` | 搜索反馈埋点：把每次搜索里「你选了第几个 / 翻页 / 取消 / 喊换个版本」记进本地 `feedback.db`，`python feedback.py` 出统计（`--selftest` 离线自测） |
-| `eval_search.py` | 搜索排序评测：`python eval_search.py` 打分，`--audit` 跑出结果供人工核对（**暂搁置**，原因见「搜索反馈埋点」） |
-| `eval_confirm.py` | 半自动填期望 BV 号（**暂搁置**，同上） |
-| `microbit_verify.py` | 用虚拟串口验证 micro:bit 协议与串口链路，不需要硬件 |
-| `microbit_live_test.py` | micro:bit 真机联调：连上串口后逐项下发报文、引导按键，双向验证（**需要开发板**）。结果分四类：通过 / 失败 / 跳过 / **硬件**（板子本身没反应，如 logo 失灵） |
+| `review/eval_search.py` | 搜索排序评测：`python review/eval_search.py` 打分，`--audit` 跑出结果供人工核对（**暂搁置**，原因见「搜索反馈埋点」） |
+| `review/eval_confirm.py` | 半自动填期望 BV 号（**暂搁置**，同上） |
+| `microbit/microbit_verify.py` | 用虚拟串口验证 micro:bit 协议与串口链路，不需要硬件 |
+| `microbit/microbit_live_test.py` | micro:bit 真机联调：连上串口后逐项下发报文、引导按键，双向验证（**需要开发板**）。结果分四类：通过 / 失败 / 跳过 / **硬件**（板子本身没反应，如 logo 失灵） |
 | `progress_bar.py` | 播放进度条：纯渲染 + 后台刷新线程（生产代码） |
 | `progress_bar_verify.py` | 播放进度条验证：`python progress_bar_verify.py [--file 歌曲] [--demo]` |
 
@@ -124,7 +126,7 @@ python main_CUI.py
 - **关键词不能重复计分。** 词典里存在包含关系的词（如 `无损` / `无损音质`），若逐个做 `word in title`，标题里一处 `Hi-Res无损音质` 会被算成三四个关键词，堆砌音质词的标题就能刷出虚高分。现在按词长降序匹配，命中区间标记为已消费，重叠部分不再重复计入。
 - **关键词匹配要折叠大小写与花式写法。** NFKC 归一化 + 转小写后，`Hi-res`、`HI-RES`、全角 `Ｒｅｍａｓｔｅｒ`，甚至标题里常见的花式粗斜体 `𝐇𝐢-𝐑𝐞𝐬`，都能正常命中词典。
 
-参数都集中在 `song_search.py` 的类属性里，方便调参做对比实验。改动任何一项后建议跑一次 `python eval_search.py` 确认没有回归。
+参数都集中在 `song_search.py` 的类属性里，方便调参做对比实验。改动任何一项后建议跑一次 `python review/eval_search.py` 确认没有回归。
 
 ---
 
@@ -256,24 +258,24 @@ hex 是二进制，git diff 看不出内容，改了 `.py` 忘了重新打包的
 ## 测试
 
 ```bash
-python clean_title_verify.py        # 只验证歌名清洗规则
-python eval_search.py               # 搜索排序评测（3 条用例，含「雨爱」「花海」）
-python smoke_test.py                # 全量冒烟测试（含下载链路，会联网）
-python microbit/check_remote.py     # micro:bit 板端固件（模拟运行，无需开发板）
-python microbit_verify.py           # micro:bit 主机侧协议（loop:// 虚拟串口，无需开发板）
-python microbit_live_test.py        # micro:bit 真机联调（需要插着板子，交互式）
-python progress_bar_verify.py       # 播放进度条；--file 指定歌曲，--demo 看刷新干扰
+python clean_title_verify.py            # 只验证歌名清洗规则
+python review/eval_search.py            # 搜索排序评测（3 条用例，含「雨爱」「花海」）
+python smoke_test.py                    # 全量冒烟测试（含下载链路，会联网）
+python microbit/check_remote.py         # micro:bit 板端固件（模拟运行，无需开发板）
+python microbit/microbit_verify.py      # micro:bit 主机侧协议（loop:// 虚拟串口，无需开发板）
+python microbit/microbit_live_test.py   # micro:bit 真机联调（需要插着板子，交互式）
+python progress_bar_verify.py           # 播放进度条；--file 指定歌曲，--demo 看刷新干扰
 ```
 
-`microbit_verify.py` 用 pyserial 自带的 `loop://` 虚拟串口，所以不插开发板也能跑通主机侧逻辑。
+`microbit/microbit_verify.py` 用 pyserial 自带的 `loop://` 虚拟串口，所以不插开发板也能跑通主机侧逻辑。
 
-真按键、真屏幕要靠 `microbit_live_test.py`（先把 `microbit/microbit_remote.py` 刷进板子）：
+真按键、真屏幕要靠 `microbit/microbit_live_test.py`（先把 `microbit/microbit_remote.py` 刷进板子）：
 
 ```bash
-python microbit_live_test.py            # 五组全跑：连接 / 主机下发 / 按键手势 / 协议边界 / 拔线重连
-python microbit_live_test.py --monitor  # 只盯着串口看板子发来什么
-python microbit_live_test.py --play     # 手动模式，自己敲命令下发报文
-python microbit_live_test.py --auto     # 无人值守：跳过一切需要人手的部分
+python microbit/microbit_live_test.py            # 五组全跑：连接 / 主机下发 / 按键手势 / 协议边界 / 拔线重连
+python microbit/microbit_live_test.py --monitor  # 只盯着串口看板子发来什么
+python microbit/microbit_live_test.py --play     # 手动模式，自己敲命令下发报文
+python microbit/microbit_live_test.py --auto     # 无人值守：跳过一切需要人手的部分
 ```
 
 它会逐项打印「现在请按什么、屏幕上应该出现什么」，按键类会实时等待板子的回应。
@@ -320,27 +322,27 @@ python feedback.py --selftest # 离线自测（临时库，不动真实数据）
 
 ---
 
-`eval_search.py` 的用例格式是 `(查询词, 期望 BV 集合, 备注)`：同一首歌在 B 站往往有多个可接受的版本，所以期望值写成集合，命中任意一个即算通过。**新增用例前请务必核实 BV 号确实对应这首歌**，不要凭印象填。
+`review/eval_search.py` 的用例格式是 `(查询词, 期望 BV 集合, 备注)`：同一首歌在 B 站往往有多个可接受的版本，所以期望值写成集合，命中任意一个即算通过。**新增用例前请务必核实 BV 号确实对应这首歌**，不要凭印象填。
 
 正确的扩充流程是两步，别反着来：
 
 ```bash
-python eval_search.py --audit        # 1. 先跑，把 Top5 写进 eval_audit.md
+python review/eval_search.py --audit   # 1. 先跑，把 Top5 写进 review/eval_audit.md
 # 人工核对：哪些 BV 号确实是这首歌？填进 eval_search.py 的 CASES
-python eval_search.py                # 2. 再打分
+python review/eval_search.py           # 2. 再打分
 ```
 
 期望集合为空的用例会被打分模式跳过。千万不要拿程序跑出来的 Top1 反过来填期望值 ——
 那样准确率必然是 100%，评测集就白建了。
 
-一条条手查 BV 号太烦，用 `eval_confirm.py` 半自动做：
+一条条手查 BV 号太烦，用 `review/eval_confirm.py` 半自动做：
 
 ```bash
-python eval_confirm.py               # 逐条：自动开 B 站搜索页 -> 你粘链接 -> 它洗 BV 号
-python eval_confirm.py --start 10    # 接着上次的进度
-python eval_confirm.py --rounds 5    # 一条最多粘几次（默认 3）
-python eval_confirm.py --apply       # 确认完写回 eval_search.py（改前自动备份）
-python eval_confirm.py --selftest    # 离线自测粘贴流程（不联网不弹浏览器）
+python review/eval_confirm.py               # 逐条：自动开 B 站搜索页 -> 你粘链接 -> 它洗 BV 号
+python review/eval_confirm.py --start 10    # 接着上次的进度
+python review/eval_confirm.py --rounds 5    # 一条最多粘几次（默认 3）
+python review/eval_confirm.py --apply       # 确认完写回 eval_search.py（改前自动备份到项目根 backup/）
+python review/eval_confirm.py --selftest    # 离线自测粘贴流程（不联网不弹浏览器）
 ```
 
 粘什么都行 —— 完整网址、`b23.tv` 短链、纯 BV 号、`av` 号、B 站 App 分享的那一长串，

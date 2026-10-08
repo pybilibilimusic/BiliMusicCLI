@@ -23,7 +23,7 @@
 
 ### 建一个检索准确率评测集
 - 准备 50 首歌的测试集：`歌名（+歌手） → 正确的 BV 号`
-- 写脚本 `eval_search.py` 跑一遍，算 **Top-1 / Top-3 准确率**
+- 写脚本 `review/eval_search.py` 跑一遍，算 **Top-1 / Top-3 准确率**
   - ✅ 已搭好骨架并内置 3 条基准用例（`约会 音乐` / `花海` / `雨爱`），目前 3/3 通过
   - ⬜ 扩充到 20~50 条，尤其是容易被误伤的歌名（通用词歌名、有重名翻唱的、日语/英语歌）
 - 改进前后各测一次，把数字写进结题报告（比"我觉得好用"有说服力）
@@ -54,15 +54,15 @@
 
 ## P2 —— 锦上添花
 
-- [x] **micro:bit 遥控补全**：已实现 `microbit_bridge.py`（play/pause/切歌/停止/音量 ±/音量绝对值/状态查询），
+- [x] **micro:bit 遥控补全**：已实现 `microbit/microbit_bridge.py`（play/pause/切歌/停止/音量 ±/音量绝对值/状态查询），
       host 侧会把 `STATUS / VOL / TITLE / TIME / STATE` 推给板子，每 5 秒自动同步一次。
       板端参考实现在 `microbit/microbit_remote.py`。
-      - ✅ 两侧都有离线验证：`python microbit_verify.py`（主机侧协议 44 项，用虚拟串口）
+      - ✅ 两侧都有离线验证：`python microbit/microbit_verify.py`（主机侧协议 44 项，用虚拟串口）
         和 `python microbit/check_remote.py`（板端固件 63 项，用 `microbit/stub_microbit.py` 模拟层真跑）
       - ✅ **刷板前务必跑一次 `check_remote.py`**。曾经因为写了 `import display`（micro:bit 上
         display 是 `microbit` 模块的成员而非独立模块）导致固件启动即 ImportError，
         而当时没有任何离线手段能发现。现在静态检查会把这类错误拦下来。
-      - ✅ 真机联调跑过：`microbit_live_test.py` 26 项 = 24 通过 / 1 失败 / 1 跳过
+      - ✅ 真机联调跑过：`microbit/microbit_live_test.py` 26 项 = 24 通过 / 1 失败 / 1 跳过
       - ✅ 中文歌名拼音：`pypinyin` 已装并写进 requirements.txt
       - ✅ 真机暴露的两个问题已修（A+B 短按也能暂停；音量改成静态闪数字）
       - ⬜ 待办：新固件刷进板子后再跑一次完整交互版确认屏幕观感（按键手感、滚动速度）
