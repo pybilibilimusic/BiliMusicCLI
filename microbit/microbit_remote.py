@@ -58,6 +58,7 @@ SCROLL_DELAY_MS = 150     # display.scroll 的每步延时，要和它自己的�
 TOUCH_DEBOUNCE_MS = 400   # logo 触摸去抖（手指按住会连续触发）
 LOGO_STUCK_MS = 5000      # logo 连续报「被触摸」超过这么久，判定传感器卡死并停用
 HANDSHAKE_TIMEOUT = 15    # 开机后最多发这么多次 QUERY 握手
+UART_RETRY_MS = 5000      # 串口判定失效后，隔这么久重试一次 uart.init()
 GLYPH_BRIGHT = 4          # 自定义字模/图标的亮度；点阵满亮是 9，晚上看久了刺眼
 DIGIT_MS = 420            # 音量播报时每一位停留多久
 
@@ -88,6 +89,7 @@ _SHAPE_V = ("#.#", "#.#", "#.#", "#.#", ".#.")   # 音量前缀，和冒号/斜�
 _SHAPE_PAUSE = ("#.#", "#.#", "#.#", "#.#", "#.#")
 _SHAPE_STOP = ("#.#.#", ".#.#.", "..#..", ".#.#.", "#.#.#")   # ✗
 _SHAPE_NOTE = ("..###", "..#..", "..#..", "###..", "###..")   # 八分音符
+_SHAPE_UART_FAULT = (".#.", ".#.", ".#.", "...", ".#.")   # ! 串口挂了
 
 
 def glyph_image(shape):
@@ -122,6 +124,7 @@ def volume_frames(value):
 ICON_PAUSE = glyph_image(_SHAPE_PAUSE)
 ICON_STOP = glyph_image(_SHAPE_STOP)
 ICON_NOTE = glyph_image(_SHAPE_NOTE)
+ICON_UART_FAULT = glyph_image(_SHAPE_UART_FAULT)
 
 
 # ---------------------------------------------------------------- 运行时状态
@@ -132,6 +135,8 @@ position = "?"            # 已播秒数
 duration = "?"            # 总秒数
 
 _host_seen = False        # 是否已经收到过主机的报文
+_uart_broken = False      # 串口是不是挂了（挂了就在屏幕上打报警图标）
+_uart_retry_at = 0        # 上一次尝试恢复串口的时刻
 _handshake_left = HANDSHAKE_TIMEOUT
 _last_query_at = 0
 _last_scroll_at = 0
@@ -160,10 +165,19 @@ _volume_changed = False   # 只有音量真的变了才播报（keepalive 会反
 # ---------------------------------------------------------------- 串口输出
 def send(line):
     """往主机发一条指令。"""
+    global _uart_broken
     try:
         uart.write(line + "\n")
     except Exception:
-        pass
+        # 以前这里是 pass：串口挂了板子一点症状都没有，真机上只能靠猜。
+        # 现在挂了就在屏幕上打感叹号。
+        if not _uart_broken:
+            _uart_broken = True
+            render()
+        return
+    if _uart_broken:            # 又写通了，说明链路自己恢复了
+        _uart_broken = False
+        render()
 
 
 def beep(notes):
@@ -216,6 +230,9 @@ def render():
     """按当前状态刷新屏幕。"""
     global _last_scroll_at
     _last_scroll_at = running_time()
+    if _uart_broken:
+        display.show(ICON_UART_FAULT)   # 反正也收不到新歌名，报警优先
+        return
     if status == "pause":
         display.show(ICON_PAUSE)
     elif status == "stop" and not title:
@@ -495,7 +512,7 @@ def boot():
 
 def tick():
     """主循环的一轮。返回 True 表示这一轮有东西要发。"""
-    global _handshake_left, _last_query_at, _volume_changed
+    global _handshake_left, _last_query_at, _volume_changed, _uart_retry_at
 
     now = running_time()
 
@@ -518,6 +535,14 @@ def tick():
 
     # 滚动和音量播报都是异步的，每轮推进一格
     pump_screen(now)
+
+    # 串口挂了就隔一阵重试一次 init，链路自己好起来时不用重启板子
+    if _uart_broken and now - _uart_retry_at >= UART_RETRY_MS:
+        _uart_retry_at = now
+        try:
+            uart.init(baudrate=BAUDRATE)
+        except Exception:
+            pass
 
     # 开机握手：主机程序可能还没跑起来，多发几次 QUERY 直到它回应
     if not _host_seen and _handshake_left > 0:
