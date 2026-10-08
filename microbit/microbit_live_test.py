@@ -20,9 +20,15 @@ micro:bit 遥控 —— 真机联调脚本（直接调用 microbit_bridge.py）
 """
 
 import argparse
+import os
 import queue
 import sys
 import time
+
+# 从别的目录运行时（python microbit/microbit_live_test.py）也能找到同目录的模块
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from microbit_bridge import MicrobitBridge, ascii_display, clamp_volume
 

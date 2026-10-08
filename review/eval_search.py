@@ -25,11 +25,16 @@ import os
 import sys
 import time
 
+# 本脚本在 review/ 子目录，被测模块（song_search 等）在项目根
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(HERE)
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from song_search import SongSearch
 
 # --audit 的核对表落到哪儿
-AUDIT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "eval_audit.md")
+AUDIT_FILE = os.path.join(HERE, "eval_audit.md")
 
 # (查询词, 期望 BV 集合, 备注)
 #

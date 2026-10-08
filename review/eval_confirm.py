@@ -52,10 +52,16 @@ from datetime import datetime
 
 import requests
 
+# 本脚本在 review/ 子目录：eval_search 在同目录，config 在项目根
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(HERE)
+for _path in (HERE, PROJECT_ROOT):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
+
 import config
 import eval_search
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 EVAL_SEARCH = os.path.join(HERE, "eval_search.py")
 JSON_FILE = os.path.join(HERE, "eval_confirmed.json")
 MD_FILE = os.path.join(HERE, "eval_confirmed.md")
@@ -214,7 +220,8 @@ def write_markdown(data, cases):
 def apply_to_eval(data):
     """把确认结果写回 eval_search.py 的 CASES。改之前先备份。"""
     stamp = datetime.now().strftime("%Y-%m-%d-confirm")
-    backup_dir = os.path.join(HERE, "backup", stamp)
+    # 备份统一落到项目根的 backup/，跟其他轮次的备份放一起
+    backup_dir = os.path.join(PROJECT_ROOT, "backup", stamp)
     os.makedirs(backup_dir, exist_ok=True)
     backup_path = os.path.join(backup_dir, "eval_search.py")
     with open(EVAL_SEARCH, encoding="utf-8") as handle:
@@ -251,7 +258,7 @@ def apply_to_eval(data):
         handle.write(src)
 
     print("\n已写回 eval_search.py（备份在 %s）"
-          % os.path.relpath(backup_path, HERE))
+          % os.path.relpath(backup_path, PROJECT_ROOT))
     for item in changed:
         print("  [OK]   %s" % item)
     for item in skipped:

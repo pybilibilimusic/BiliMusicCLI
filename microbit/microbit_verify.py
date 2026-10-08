@@ -15,9 +15,15 @@
   6. 真实串口读写（loop:// 回环）
 """
 
+import os
 import queue
 import sys
 import time
+
+# 从别的目录运行时（python microbit/microbit_verify.py）也能找到同目录的模块
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from microbit_bridge import (
     MicrobitBridge,
