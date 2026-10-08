@@ -186,7 +186,11 @@ def main():
             return 2
     elif ok:
         print("[OK] hex 与源码同步 —— %s" % note)
-        print("    runtime：%s" % UFLASH_RUNTIME_NOTE)
+        # 别无条件说成 uflash：这个 hex 也可能是官方编辑器编译的，
+        # 指纹只保证「hex 里嵌的是这份源码」，不保证是谁打包的
+        print("    runtime：取决于打包工具 —— 用 --regen 重打会得到 %s；"
+              % UFLASH_RUNTIME_NOTE)
+        print("             用 python.microbit.org 官方编辑器编译则不是它。")
         if regen_mode:
             print("    （--regen：已是最新，无需重打包）")
         return 0
