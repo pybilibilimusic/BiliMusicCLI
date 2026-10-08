@@ -290,7 +290,13 @@ python microbit/microbit_live_test.py --auto     # 无人值守：跳过一切�
 python microbit/key_capture.py --check 8        # 开机体检：刚刷完固件看有没有 PANIC 上报
 python microbit/key_capture.py --plan           # 一口气收完 9 项按键（约 110 秒）
 python microbit/key_capture.py --plan --only 3  # 只重测第 3 项
+python microbit/key_capture.py --downlink      # 只验「电脑 -> 板子」，不用看屏幕
 ```
+
+`--downlink` 是专门给「屏幕不动但又说不清是不是下发没到」这种情况用的，原理是：
+板子开机后每秒发一次 `QUERY` 握手，**一旦收到主机报文就立刻停发**。
+所以「发了 `STATE` 之后 `QUERY` 停不停」就是下行的判据，纯主机侧可观测，不用人盯屏幕。
+跑起来后按一次 RESET（握手只在开机后 15 秒内）。
 
 提示会同步写进 `microbit/temp/NOW.txt`（当前该按什么）和 `microbit/temp/PLAN.txt`
 （带钟点的完整时间表），开着其中一个跟着按就行；结果出在

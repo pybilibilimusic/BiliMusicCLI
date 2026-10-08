@@ -7,12 +7,15 @@
     你想「一口气把板子拿起来按完再看结果」，就得有人一直守着电脑。
     这个脚本把它反过来：先排好一张时间表，脚本自己按表收，你只管按顺序按板子。
 
-两种用法：
+三种用法：
     # 1) 开机体检：刚刷完固件先看它有没有启动就崩（PANIC 上报）
     .venv\\Scripts\\python.exe microbit\\key_capture.py --check 8
 
     # 2) 按键收集：默认 120 秒，按下面这张表操作板子
     .venv\\Scripts\\python.exe microbit\\key_capture.py --plan
+
+    # 3) 下行链路：验「电脑 -> 板子」通不通，不用看屏幕（要按一次 RESET）
+    .venv\\Scripts\\python.exe microbit\\key_capture.py --downlink
 
     # 某一项没过，只想单独重测它（项号见下面那张表）
     .venv\\Scripts\\python.exe microbit\\key_capture.py --plan --only 3,5,9
@@ -221,6 +224,94 @@ def run_check(port, seconds, wait_board=0):
     else:
         log(fd, "\n结论：没看到 PANIC，固件正常在跑。可以跑 --plan 测按键了。")
     log(fd, f"\n日志：{LOG_PATH}")
+    fd.close()
+    return 0
+
+
+# ------------------------------------------------- 模式三：下行链路（不用看屏幕）
+def run_downlink(port, wait_board=0):
+    """
+    验「电脑 -> 板子」这条路，而且不用人盯着屏幕。
+
+    原理：板子开机后每秒发一次 QUERY 握手（最多 15 次），一旦收到主机报文就把
+    _host_seen 置 True、QUERY 立刻停。所以「发了 STATE 之后 QUERY 停不停」
+    就是下行的判据 —— 纯主机侧可观测。
+
+    为什么要单独做：验下行本来只能靠看屏幕（发了 STATUS 看图标变没变），
+    可屏幕只有人能看，脚本没法自动判定。握手会停这件事把下行变成了可观测信号。
+
+    要按一次 RESET，握手只在开机后 15 秒内发。
+    """
+    chosen = choose_port(port, timeout=wait_board)
+    if chosen is None:
+        print("没找到 micro:bit 串口。先看资源管理器里有没有 MICROBIT 盘。")
+        return 1
+
+    os.makedirs(TEMP, exist_ok=True)
+    fd = open(LOG_PATH, "w", encoding="utf-8")
+    try:
+        reader = Reader(chosen)
+    except Exception as exc:
+        log(fd, "打不开串口 %s：%s" % (chosen, exc))
+        fd.close()
+        return 1
+
+    log(fd, "下行链路测试（%s）" % chosen)
+    log(fd, "原理：板子开机后每秒发 QUERY，收到主机报文就立刻停发；")
+    log(fd, "      所以「发了 STATE 之后 QUERY 停不停」= 下行通不通。")
+    log(fd, "")
+    log(fd, ">>> 现在请按一下板子背面的 RESET，然后什么都别按")
+
+    queries = []          # 下发前收到的 QUERY 时间戳
+    after_send = []       # 下发 STATE 之后收到的 QUERY（不等于空就说明没收到）
+    sent_at = None
+    deadline = time.time() + 30
+    try:
+        while time.time() < deadline:
+            for _ts, text in reader.pump():
+                if text.startswith("PANIC"):
+                    log(fd, "收到 %s   <<< 崩溃上报" % text)
+                    continue
+                if text.strip() == "QUERY":
+                    if sent_at is None:
+                        queries.append(time.time())
+                        log(fd, "收到 QUERY（第 %d 条）" % len(queries))
+                    else:
+                        after_send.append(time.time())
+                        log(fd, ">> 下发后又收到 QUERY（第 %d 条）" % len(after_send))
+                else:
+                    log(fd, "收到 %s" % text)
+
+            # 收到 3 条说明握手稳定在跑，可以发 STATE 试下行了
+            if sent_at is None and len(queries) >= 3:
+                reader.send("STATE:play|65|37/242")
+                sent_at = time.time()
+                log(fd, "")
+                log(fd, "已下发 STATE:play|65|37/242 —— 板子收到就该停发 QUERY，")
+                log(fd, "屏幕也会从 × 变成音符图标（顺手看一眼）")
+                log(fd, "接下来等 6 秒，看 QUERY 停不停 ...")
+                log(fd, "")
+
+            if sent_at is not None and time.time() - sent_at > 6:
+                break
+            time.sleep(0.02)
+    except KeyboardInterrupt:
+        log(fd, "用户中断")
+
+    reader.close()
+    log(fd, "")
+    if not queries:
+        log(fd, "结论：一条 QUERY 都没收到 —— 上行不通（板子没开口）。")
+        log(fd, "      先确认真的按了 RESET；还是没有就跑 microbit/diagnose.py。")
+    elif after_send:
+        log(fd, "结论：下行不通 —— 发了 STATE 之后板子还在发 QUERY（%d 条），"
+                "说明它没收到或没解析。" % len(after_send))
+        log(fd, "      板子在跑、上行也通，问题就在这条线上：线 / hub / 驱动 / 接口芯片。")
+    else:
+        log(fd, "结论：下行通 —— 下发 STATE 后 6 秒内没再收到 QUERY，")
+        log(fd, "      说明板子收到并解析了主机报文（屏幕也该从 × 变成音符图标）。")
+    log(fd, "")
+    log(fd, "日志：%s" % LOG_PATH)
     fd.close()
     return 0
 
@@ -445,6 +536,8 @@ def main():
     parser.add_argument("--check", type=int, metavar="SEC",
                         help="体检模式：监听 SEC 秒，看有没有 PANIC")
     parser.add_argument("--plan", action="store_true", help="按键收集模式")
+    parser.add_argument("--downlink", action="store_true",
+                        help="下行链路测试：发了 STATE 之后 QUERY 停不停（要按一次 RESET）")
     parser.add_argument("--timeout", type=int, default=ITEM_TIMEOUT, metavar="SEC",
                         help=f"每项最多等几秒，收到正确上报就提前进下一项"
                              f"（默认 {ITEM_TIMEOUT}）")
@@ -454,11 +547,13 @@ def main():
                         help="串口没出现时最多等几秒（先跑脚本再插线时用）")
     args = parser.parse_args()
 
-    if not args.check and not args.plan:
+    if not args.check and not args.plan and not args.downlink:
         parser.print_help()
         return 1
     if args.check:
         return run_check(args.port, args.check, args.wait_board)
+    if args.downlink:
+        return run_downlink(args.port, args.wait_board)
 
     only = None
     if args.only:
