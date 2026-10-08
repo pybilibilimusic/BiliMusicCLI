@@ -59,10 +59,12 @@ def test_static():
         source = handle.read()
     tree = ast.parse(source)
 
-    # uflash 的硬限制：脚本超过这个字节数就拒绝打包，而报错信息藏得挺深
-    # （"Python script must be less than 20151.0 bytes"）。
-    # 这个文件已经很接近上限了，多写几行注释就能把 --regen 搞挂，
-    # 所以留一条余量红线：低于 512 字节就报警，逼着先精简再继续加。
+    # 脚本超过这个字节数板子就存不下。上限最早来自 uflash 的报错
+    # （"Python script must be less than 20151.0 bytes"），但走官方编辑器
+    # 同样会被卡住 —— 2026-10-08 实测：21038 字节时 python.microbit.org 报
+    # "There is no storage space left"，砍到 18714 就编译通过了。
+    # 也就是说这条线是**板子 flash 的真实容量**，跟用谁打包没关系。
+    # 所以留余量红线，逼着先精简再继续加功能。
     UFLASH_LIMIT = 20151
     HEADROOM_MIN = 512
     size = os.path.getsize(FIRMWARE)
