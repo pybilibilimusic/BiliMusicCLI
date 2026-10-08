@@ -92,6 +92,7 @@ python main_CUI.py
 | `review/eval_confirm.py` | 半自动填期望 BV 号（**暂搁置**，同上） |
 | `microbit/microbit_verify.py` | 用虚拟串口验证 micro:bit 协议与串口链路，不需要硬件 |
 | `microbit/microbit_live_test.py` | micro:bit 真机联调：连上串口后逐项下发报文、引导按键，双向验证（**需要开发板**）。结果分四类：通过 / 失败 / 跳过 / **硬件**（板子本身没反应，如 logo 失灵） |
+| `microbit/key_capture.py` | 按键真机收集器：排好时间表自己收，不用人在电脑前一项项回车（**需要开发板**）。`--check N` 是开机体检（看新固件有没有启动就崩），`--plan` 一口气收完 9 项按键 |
 | `progress_bar.py` | 播放进度条：纯渲染 + 后台刷新线程（生产代码） |
 | `progress_bar_verify.py` | 播放进度条验证：`python progress_bar_verify.py [--file 歌曲] [--demo]` |
 
@@ -282,6 +283,19 @@ python microbit/microbit_live_test.py --auto     # 无人值守：跳过一切�
 
 它会逐项打印「现在请按什么、屏幕上应该出现什么」，按键类会实时等待板子的回应。
 注意串口一次只能被一个程序占用，跑之前把 Mu / Thonny / 串口助手都关掉。
+
+按键那九项如果不想守着电脑敲回车，用 `microbit/key_capture.py` —— 它按时间表自己收：
+
+```bash
+python microbit/key_capture.py --check 8        # 开机体检：刚刷完固件看有没有 PANIC 上报
+python microbit/key_capture.py --plan           # 一口气收完 9 项按键（约 110 秒）
+python microbit/key_capture.py --plan --only 3  # 只重测第 3 项
+```
+
+提示会同步写进 `microbit/temp/NOW.txt`（当前该按什么）和 `microbit/temp/PLAN.txt`
+（带钟点的完整时间表），开着其中一个跟着按就行；结果出在
+`microbit/temp/key_capture_result.md`。
+新固件真机上崩了会往串口报 `PANIC:<异常类>:<信息>`，这两个脚本都会把它单独标出来。
 
 板子突然「没反应 / 不收消息」时先跑 `python microbit/diagnose.py`：
 它按层测一遍 —— USB 认不认得 → **上次刷写成功了吗** → 板子开不开口 →
