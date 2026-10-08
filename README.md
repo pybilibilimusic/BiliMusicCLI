@@ -75,7 +75,7 @@ python main_CUI.py
 | `microbit/microbit_remote.py` | **跑在开发板上**的 MicroPython 参考实现（不是给电脑 Python 用的） |
 | `microbit/stub_microbit.py` | 上面那个固件的模拟层：假 display / 按键 / 串口 + 虚拟时钟 |
 | `microbit/check_remote.py` | 用模拟层离线跑一遍固件，刷板前先验证（无需开发板） |
-| `microbit/diagnose.py` | 板子「不收消息 / 没反应」时的一键链路诊断：找板子 → 原样监听 → REPL 探测 → 下发测试，最后直接给结论 |
+| `microbit/diagnose.py` | 板子「不收消息 / 没反应」时的一键链路诊断：找板子 → **查上次刷写有没有失败** → 原样监听 → REPL 探测 → 下发测试，最后直接给结论 |
 | `microbit/hex_sync.py` | 校验 / 重新打包固件 hex，防止 `.py` 改了而 hex 没跟上 |
 | `VoiceRecognition.py` | Silero VAD + FunASR 唤醒词与指令识别 |
 | `transform.py` | 调用 ffmpeg 做格式转换 |
@@ -284,13 +284,21 @@ python microbit/microbit_live_test.py --auto     # 无人值守：跳过一切�
 注意串口一次只能被一个程序占用，跑之前把 Mu / Thonny / 串口助手都关掉。
 
 板子突然「没反应 / 不收消息」时先跑 `python microbit/diagnose.py`：
-它按层测一遍 —— USB 认不认得 → 板子开不开口 → 是不是掉进 REPL → 下发报文看屏幕，
-最后直接给结论和下一步，省得一层层手动试。
+它按层测一遍 —— USB 认不认得 → **上次刷写成功了吗** → 板子开不开口 →
+是不是掉进 REPL → 下发报文看屏幕，最后直接给结论和下一步，省得一层层手动试。
 
 刷固件的两条路里，**V2.2 建议用官方编辑器**（python.microbit.org 里新建项目、
 把 `microbit/microbit_remote.py` 整份粘进去、下载 hex 拖到 MICROBIT 盘）。
 `hex_sync.py --regen` 走的是 uflash 自带的 MicroPython 2.0.0-beta.5，
 这个 runtime 在 V2.2 上偶尔会出现「COM 口认得、但数据一个字节都不通」。
+
+⚠️ **刷写这一步本身也会失败，而且电脑上一声不吭** —— DAPLink 只在 MICROBIT 盘上
+留一个 `FAIL.TXT`。最常见那条 `File sent out of order by PC` 是文件块被写乱序了
+（磁盘缓存 / 杀毒软件实时扫描 / U 盘写入策略都会触发），结果只刷进去半截固件，
+表现为串口乱码、板子静默、屏幕哭脸 —— 全都像是「程序没跑」，特别容易误判成
+代码 bug 或硬件坏了。实测最稳的写法是 **PowerShell 的 `Copy-Item`**
+或资源管理器拖放（Git Bash 的 `cp` 会触发乱序）；刷完一定回来看一眼
+`FAIL.TXT` 还在不在 —— **它在，就说明这一遍白刷了**。
 
 ## 搜索反馈埋点（现在在用的办法）
 

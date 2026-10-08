@@ -12,17 +12,22 @@ micro:bit 链路一键诊断 —— 板子「不收消息 / 没反应」时先�
     python microbit/diagnose.py --no-send       # 别往板子发东西（它在跑别的程序时）
     python microbit/diagnose.py --listen 15     # 监听时间拉长到 15 秒
 
-四步分别看什么：
+五步分别看什么：
     [1] 板子在不在 USB 上、COM 号跟 config.ini 对不对得上
-    [2] 原样监听：板子会不会自己开口（一个字节都不发 = 程序没跑）
-    [3] REPL 探测：发个空行看有没有 >>> 回显（有 = 固件没跑，板子在等命令）
-    [4] 下发协议报文：让你看屏幕有没有反应（区分「没收到」和「收到了不显示」）
+    [2] 上次刷写成功了吗 —— MICROBIT 盘上有 FAIL.TXT 就说明根本没刷进去，
+        板子上跑的是半截坏固件。这一步要最先看：它骗起人来特别像
+        「程序没跑」，会把人引到查波特率、怀疑硬件上去
+    [3] 原样监听：板子会不会自己开口（注意主固件只在开机发一阵 QUERY，
+        之后没按键就是静默，这是正常的 —— 按 RESET 最能抓到）
+    [4] REPL 探测：发个空行看有没有 >>> 回显（有 = 固件没跑，板子在等命令）
+    [5] 下发协议报文：让你看屏幕有没有反应（区分「没收到」和「收到了不显示」）
 
 ⚠️ 跑之前把 Mu / Thonny / 串口助手 / main_CUI 都关掉 —— 串口一次只能一个人占。
 """
 
 import argparse
 import os
+import string
 import sys
 import time
 
@@ -72,6 +77,40 @@ def looks_like_text(data):
         return False
     ok = sum(1 for b in data if 32 <= b < 127 or b in (10, 13))
     return ok / len(data) > 0.85
+
+
+def find_microbit_drive():
+    """找 MICROBIT 那个 U 盘的盘符（靠盘上的 MICROBIT.HTM 认）。"""
+    for letter in string.ascii_uppercase:
+        path = letter + ":\\"
+        try:
+            if os.path.exists(os.path.join(path, "MICROBIT.HTM")):
+                return path
+        except Exception:
+            continue
+    return None
+
+
+def flash_result():
+    """
+    看 MICROBIT 盘上有没有 FAIL.TXT —— 有就说明上次刷写根本没成功。
+
+    为什么单列这一步：DAPLink 刷写失败时不会在电脑上报错，只是悄悄在盘上
+    留一个 FAIL.TXT。板子上跑的还是旧固件（甚至是只写进去半截的坏固件），
+    表现是静默 / 串口乱码 / 屏幕哭脸 —— 全都像是「程序没跑」，很容易把人
+    引到重刷固件、查波特率、怀疑硬件上去，其实根因在刷写那一步。
+    """
+    drive = find_microbit_drive()
+    if not drive:
+        return None, None, "没找到 MICROBIT 盘（板子不在 U 盘模式，或线没插好）"
+    fail = os.path.join(drive, "FAIL.TXT")
+    if os.path.exists(fail):
+        try:
+            with open(fail, "r", encoding="utf-8", errors="replace") as fh:
+                return drive, fh.read().strip(), None
+        except Exception as exc:
+            return drive, "(读不到内容：%s)" % exc, None
+    return drive, None, None
 
 
 def listen(port, seconds):
@@ -153,7 +192,7 @@ def main():
     print("=" * 70)
 
     # ---------- [1] 找板子 ----------
-    print("\n[1/4] 找板子")
+    print("\n[1/5] 找板子")
     hits = find_board()
     if not hits:
         print("  ✗ 一个 micro:bit 都没扫到。")
@@ -177,8 +216,26 @@ def main():
     else:
         print("  config.ini 里没配 micro:bit 端口")
 
-    # ---------- [2] 原样监听 ----------
-    print("\n[2/4] 原样监听 %d 秒（板子会自己开口吗）" % args.listen)
+    # ---------- [2] 上次刷写成功了吗 ----------
+    print("\n[2/5] 上次刷写成功了吗（看 MICROBIT 盘上有没有 FAIL.TXT）")
+    drive, fail_text, drive_note = flash_result()
+    flash_failed = bool(fail_text)
+    if drive_note:
+        print("  %s" % drive_note)
+    elif flash_failed:
+        print("  ★★★ %s 上有 FAIL.TXT —— 上次刷写失败了！" % drive)
+        print("      板子上跑的还是旧固件，甚至可能是只写进去半截的坏固件。")
+        print("      静默 / 串口乱码 / 屏幕哭脸都是这么来的 —— 不是代码也不是硬件。")
+        print("      盘上写的失败原因：%s" % fail_text.replace("\n", " | "))
+        print("      → 重新刷一次；刷完回来再看这个文件还在不在。")
+    else:
+        print("  %s 上没有 FAIL.TXT —— 上次刷写是成功的" % drive)
+
+    # ---------- [3] 原样监听 ----------
+    print("\n[3/5] 原样监听 %d 秒（板子会自己开口吗）" % args.listen)
+    print("  ※ 主固件只在开机后发一阵 QUERY 握手，之后没人按键就一句话不说，")
+    print("    所以「板子已经跑了一会儿」时静默是正常的。")
+    print("    想抓启动瞬间的数据，现在按一下板子背面的 RESET 最有效。")
     try:
         total, samples = listen(port, args.listen)
     except Exception as exc:
@@ -200,7 +257,7 @@ def main():
             print("    → 乱码通常说明波特率不对或线路有干扰")
 
     # ---------- [3] REPL 探测 ----------
-    print("\n[3/4] REPL 探测（发个空行，看有没有 >>> 回显）")
+    print("\n[4/5] REPL 探测（发个空行，看有没有 >>> 回显）")
     try:
         out = probe_repl(port)
     except Exception as exc:
@@ -218,9 +275,9 @@ def main():
     # ---------- [4] 下发测试 ----------
     sent = False
     if args.no_send:
-        print("\n[4/4] 已跳过下发测试（--no-send）")
+        print("\n[5/5] 已跳过下发测试（--no-send）")
     else:
-        print("\n[4/4] 下发 STATUS:play / TITLE:HELLO / VOL:50 / TIME:0/100")
+        print("\n[5/5] 下发 STATUS:play / TITLE:HELLO / VOL:50 / TIME:0/100")
         print("      ★ 现在请看板子屏幕：有没有出现 HELLO 或播放图标？")
         try:
             sent = send_probe(port)
@@ -231,11 +288,18 @@ def main():
     print("\n" + "=" * 70)
     print("结论")
     print("=" * 70)
-    if in_repl:
+    if flash_failed:
+        print("★ 根因就在这一步：上次刷写失败了，板子上的固件本身是坏的。")
+        print("  串口静默 / 收到乱码 / 屏幕哭脸全是它引起的 ——")
+        print("  别去查波特率，也别急着怀疑硬件，先把固件刷进去再说：")
+    elif in_repl:
         print("固件没在跑（板子在 REPL）。重刷一次：")
     elif silent and not in_repl:
-        print("板子完全静默，也不在 REPL —— 程序没跑或串口没初始化。")
-        print("重刷一次固件；刷完还这样就是硬件接触问题：")
+        print("板子没开口，两种可能：")
+        print("  1) 主固件的开机握手（QUERY）早发完了，没人按键时它本来就不说话（正常）")
+        print("  2) 程序确实没跑起来 / 串口没初始化")
+        print("先按一下板子背面的 RESET，再跑一次本脚本：")
+        print("抓得到 QUERY 就是第 1 种，链路没问题。抓不到再重刷固件：")
     elif not silent and looks_like_text(total):
         print("板子在正常发数据，链路是通的。")
         print("那问题多半在主程序侧（端口配错 / 没启动监听 / 串口被占）。")
@@ -252,6 +316,12 @@ def main():
     print("  2) uflash：  python microbit/hex_sync.py --regen")
     print("     然后把 microbit/microbit_remote.hex 拖到 MICROBIT 盘")
     print("     （注意 uflash 带的是 MicroPython 2.0.0-beta.5，V2.2 上偶尔抽风）")
+    print(LINE)
+    print("⚠️ 刷写这一步本身也会失败，而且电脑上一声不吭 —— 只在 MICROBIT 盘上")
+    print("   留一个 FAIL.TXT。常见那条 'File sent out of order by PC' 就是")
+    print("   文件块被写乱序了（磁盘缓存 / 杀毒软件实时扫描 / U 盘写入策略都会触发）。")
+    print("   实测最稳的写法是 PowerShell 的 Copy-Item 或资源管理器拖放；")
+    print("   刷完一定回来看一眼 FAIL.TXT 在不在 —— 它在，说明这一遍白刷了。")
     print(LINE)
     print("刷完先跑离线自检再上机：")
     print("     python microbit/check_remote.py       # 固件静态检查，不用板子")
