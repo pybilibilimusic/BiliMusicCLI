@@ -227,6 +227,11 @@ def test_parsing():
           stop_icon is not None and "9" not in getattr(stop_icon, "spec", ""),
           str(stop_icon))
 
+    # ✗ 是两条对角线，每行最多两个亮点（分居两侧）。写成 "#.#.#" 会变成米字形 ——
+    # 2026-10-09 用户盯着屏幕问「这个图案本来就这样吗」才发现，之前一直是错的。
+    per_row = [v.count("#") for v in sim4.state("_SHAPE_STOP")]
+    check("✗ 画的是对角线（每行最多两个亮点）", max(per_row) <= 2, str(per_row))
+
 
 # ============================================================ 4. 按键
 def press_and_collect(v2, presses, max_ticks=140, extra=None, keep_query=False):
