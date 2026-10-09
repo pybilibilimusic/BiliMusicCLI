@@ -33,7 +33,12 @@
 ## P1 —— 体验提升明显
 
 - [ ] **播放队列**：现在是随机切下一首，改成可查看、可编辑的顺序队列
-- [ ] **播放进度条**：mpv 的 `observe_property('time-pos')` / `duration`，实时显示进度与剩余时间
+- [x] **播放进度条**：已整合。渲染与后台刷新线程抽到 `progress_bar.py`（生产代码），
+      `progress_bar_verify.py` 31/31。三档策略（已按此实现）：
+      - 命令模式默认关 —— 后台刷新会顶掉 `input()` 里正在敲的内容，想看敲 `progress`
+      - 语音模式开 —— 没人用键盘输入
+      - 连着 micro:bit 时关 —— 进度由 bridge 的 keepalive 推点阵屏，两边同时刷会互相干扰
+      （⚠️ P2 里原本还有一条重复的「播放进度条」，已删，别再加回来）
 - [ ] **歌词**：B 站没有歌词数据，可接 lrclib 等免费源；有歌词后可以顺带推到 micro:bit 屏幕
 - [ ] **补齐 UP 主自造前缀词**：标题清洗目前覆盖 录音棚/试听/动态歌词/无损/Hi-Res/4K/60FPS，但  
   UP 主自定义前缀还没处理，导致部分文件名偏长。  
@@ -94,11 +99,6 @@
   「**搁置：micro:bit 串口**」那一节。别再重复排查，按那节的  
   「下次怎么继续」走。
 - [x] **歌名清洗前缀补齐**：`在XX录音棚（大声）听`、`日推音乐`、`每日推荐` 等已支持（P2- P3 阶段 backlog 已清空）
-- [x] **播放进度条**：已整合。渲染与后台刷新线程抽到 `progress_bar.py`（生产代码），  
-  `progress_bar_verify.py` 31/31。三档策略（已按此实现）：  
-  \- 命令模式默认关 —— 后台刷新会顶掉 `input()` 里正在敲的内容，想看敲 `progress`  
-  \- 语音模式开 —— 没人用键盘输入  
-  \- 连着 micro:bit 时关 —— 进度由 bridge 的 keepalive 推点阵屏，两边同时刷会互相干扰
 - [ ] **`rename` 命令**：手动修正识别错的歌名，并把修正结果写回缓存
 - [ ] **配置热重载**：改完 `config.ini` 用命令重新加载，不用重启
 - [ ] **Web 控制台**：起个小网页，手机浏览器就能控制播放
@@ -148,9 +148,10 @@
 | **波特率 / 帧格式**             | 标准 11 档 + 细扫 42 档 + 单端口 27 档 + 7 种帧格式（7N1/7E1/7O1/8N2/8E1/8O1）+ 位流暴力重采样（比率 0.1~10 × 帧宽 9/10/11 × 取反） | 没有一档能解出文本 → **不是它**                      |
 | **串口驱动**                  | 卸掉手动装的 `mbed Serial Port v2.0.2.0`，换成 Windows 自带 `usbser`（现在显示 `USB Serial Device (COM3)`）           | 数据变了但没变好，噪声反而更多 → **不是它**                |
 
-另外还验过并排除：hex 文件内容完好（新写的 `hex_inspect.py` 验过 `uart_probe.hex`  
-里有 `PING`、主固件里有 `QUERY/PREV/NEXT/PANIC`）、DTR/RTS 四种组合、  
-在接收位流里直接搜 `PING:uart` 的原始比特（最长公共连续段只有 16 位 = 随机水平）。
+另外还验过并排除：hex 文件内容完好（用 `hex_inspect.py` 验过：
+`uart_probe.hex` 里有 `PING`，主 hex 里有 `QUERY/PREV/NEXT/PANIC`）、
+DTR/RTS 四种组合、在接收位流里直接搜 `PING:uart` 的原始比特
+（最长公共连续段只有 16 位 = 随机水平）。
 
 ### 当前结论
 
@@ -179,6 +180,23 @@
 `init_probe.py`（uart.init 三段验证）、`uart_probe.py`、`bitsolve.py`  
 （位流重采样）、`uartsim.py`（UART 接收机仿真）。  
 要用就拷回 `microbit/` 下。排查全程记在 `.workbuddy/memory/2026-10-09.md`。
+
+---
+
+## 已知的坑（踩过就别再踩）
+
+### mpv 的 `ao` 参数：必须写 `'wasapi'`
+```python
+mpv.MPV(vo='null', vid=False, ao='auto')     # ❌ 千万别这么写
+mpv.MPV(vo='null', vid=False, ao='wasapi')   # ✅ 必须这样
+```
+**症状**：`Could not open/initialize audio device -> no sound.`
+**代价**：用户生日那天晚上排查了三四个小时。
+**为什么难查**：报错信息完全不指向 `ao` 这个参数，播放器照常起来、
+照常加载文件、进度也照走，就是没声音，很容易怀疑到别的地方去（音量、驱动、
+解码器、文件本身）。
+**现在的代码**：`player.py:14` 已经是 `ao='wasapi'`，`progress_bar_verify.py:93` 也是。
+**凡是新建 mpv 实例、或改动它的初始化参数，先照这一条对一遍。**
 
 ---
 
