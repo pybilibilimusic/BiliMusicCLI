@@ -525,6 +525,44 @@ def test_volume_announce():
           "V 帧出现了 %d 次" % shown2.count(wanted[0]) if wanted else "无基准帧")
 
 
+def test_uart_fault_alarm():
+    """
+    [15] 串口悄悄断掉必须有症状。
+
+    这一整套排查的起点就是「串口挂了但板子毫无反应」。第一版做法是在 send()
+    里抓 uart.write 的异常，屏幕打感叹号 —— 电池供电实测证明这招没用：
+    CDC 的 uart.write 在压根没有主机连着的时候照样返回成功，异常永远不会出现。
+
+    所以判据改成「主机多久没说话了」：连上过之后超过 HOST_TIMEOUT_MS 没收到
+    任何报文，就认定链路断了。这几个用例分别对应：
+      - 主机在线            -> 不报警
+      - 连上过之后主机消失  -> 报警（真要抓的就是这个）
+      - 主机又回来          -> 报警清除
+      - 从没连过（电池供电）-> 不误报
+    """
+    print("\n[15] 串口断链的报警")
+
+    live = MicrobitSim(v2=True, max_ticks=200)          # 200×50ms = 10s
+    live.inject_serial("STATE:play|65|37/242\n", at_ms=600)
+    live.run_firmware(FIRMWARE)
+    check("主机在线时不报警", live.state("_uart_broken") is False)
+
+    gone = MicrobitSim(v2=True, max_ticks=600)          # 30s，主机说完就消失
+    gone.inject_serial("STATE:play|65|37/242\n", at_ms=600)
+    gone.run_firmware(FIRMWARE)
+    check("连上过之后主机消失 -> 报警", gone.state("_uart_broken") is True)
+
+    back = MicrobitSim(v2=True, max_ticks=600)
+    back.inject_serial("STATE:play|65|37/242\n", at_ms=600)
+    back.inject_serial("TIME:40/242\n", at_ms=20000)    # 报警之后主机回来了
+    back.run_firmware(FIRMWARE)
+    check("主机回来后报警清除", back.state("_uart_broken") is False)
+
+    battery = MicrobitSim(v2=True, max_ticks=600)       # 全程没主机：电池供电场景
+    battery.run_firmware(FIRMWARE)
+    check("从没连过主机不误报（电池供电）", battery.state("_uart_broken") is False)
+
+
 def test_hex_sync():
     """
     hex 是二进制，git diff 看不出内容 —— 改了 .py 忘了重新打包的话没人会发现。
@@ -564,6 +602,7 @@ def main():
     test_keepalive_no_redraw()
     test_logo_hardware_failsafe()
     test_volume_announce()
+    test_uart_fault_alarm()
     test_hex_sync()
     test_protocol_compat()
 

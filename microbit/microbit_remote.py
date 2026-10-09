@@ -7,24 +7,23 @@
 #   A 短按 PREV / A 长按(>0.6s) VOLDOWN / B 短按 NEXT / B 长按(>0.6s) VOLUP
 #   A+B 短按 PAUSE / A+B 长按(>0.6s) STOP / 触摸 logo(仅 V2) PAUSE / 摇一摇 QUERY
 #
-# 屏幕滚动「歌名 已播/总长」；音量变化时静态闪「V+数字」，不挂在滚动串上
+# 屏幕滚动「歌名 已播/总长」，音量变化时静态闪「V+数字」
 # 串口 115200，每行 ASCII 加 \n
 #
-# logo 是电容感应不是按键，氧化/受潮会读不到，所以暂停没押在它身上（A+B 也能暂停）
+# logo 是电容感应不是按键，氧化/受潮会读不到，暂停没押在它身上（A+B 也能暂停）
 #
 # ⚠️ 四个坑：
 #   1. uart.init() 之后 REPL 就断了（重刷 .hex 即可）
 #   2. 点阵只有 ASCII，中文歌名显示成方块是正常的（主机侧会转拼音）
 #   3. 屏幕相关的都不能用 sleep()，否则睡眠期间按键和串口没人管
-#   4. 本文件必须远小于 20000 字节，否则板子存不下
-#      （实测 21038 字节时编译器报 There is no storage space left，18714 能过）
+#   4. 本文件要远小于 20000 字节，否则板子存不下（实测 21038 时编译失败）
 # ===
 
 # 用 `*` 而不是逐个列出：micro:bit V1 / V2 成员不同，
 # 通配符导入后再靠 NameError 判断引脚是否存在，就能自动适配版本。
 from microbit import *
 
-# micro:bit V2 才有 logo 触摸引脚；V1 上这个名字不存在，靠 NameError 自动降级
+# V2 才有 pin_logo；V1 上不存在，靠 NameError 自动降级
 try:
     pin_logo
     HAS_LOGO = True
@@ -48,18 +47,18 @@ TOUCH_DEBOUNCE_MS = 400   # logo 触摸去抖（手指按住会连续触发）
 LOGO_STUCK_MS = 5000      # logo 连续报「被触摸」超过这么久，判定传感器卡死并停用
 HANDSHAKE_TIMEOUT = 15    # 开机后最多发这么多次 QUERY 握手
 UART_RETRY_MS = 5000      # 串口判定失效后，隔这么久重试一次 uart.init()
+HOST_TIMEOUT_MS = 15000   # 连上过主机后，这么久没等到任何报文就判定链路断了
+                          # （主机 5 秒一次 keepalive，这里给三倍余量）
 GLYPH_BRIGHT = 4          # 自定义字模/图标的亮度；点阵满亮是 9，晚上看久了刺眼
 DIGIT_MS = 420            # 音量播报时每一位停留多久
 
-# 以前是「V2 组合键发 STOP、V1 发 PAUSE」，把暂停押在 logo 触摸上 —— 金手指
-# 氧化/沾汗就没法暂停了，所以改成按键也能暂停，V1/V2 一致。
+# 以前暂停押在 logo 触摸上，金手指氧化/沾汗就废了，所以按键也要能暂停。
 COMBO_SHORT_CMD = "PAUSE"
 COMBO_LONG_CMD = "STOP"
 
 # --- 自定义字模
 # 点阵只有 5x5，数字用 3 列宽的字模居中画。
-# 亮度统一用 GLYPH_BRIGHT 而不是 9：display.scroll() 没法调暗（MicroPython 没暴露
-# 亮度接口），能调的只有自己画的图案，能压一点是一点。
+# 亮度用 GLYPH_BRIGHT 而非 9：display.scroll() 没法调暗，能压一点是一点。
 _DIGIT_SHAPES = {
     "0": ("###", "#.#", "#.#", "#.#", "###"),
     "1": (".#.", "##.", ".#.", ".#.", "###"),
@@ -119,6 +118,7 @@ position = "?"            # 已播秒数
 duration = "?"            # 总秒数
 
 _host_seen = False        # 是否已经收到过主机的报文
+_last_host_at = 0         # 最后一次收到主机报文的时刻，用来发现「链路悄悄断了」
 _uart_broken = False      # 串口是不是挂了（挂了就在屏幕上打报警图标）
 _uart_retry_at = 0        # 上一次尝试恢复串口的时刻
 _handshake_left = HANDSHAKE_TIMEOUT
@@ -252,10 +252,14 @@ def pump_screen(now):
 
 
 # --- 串口输入
+_HOST_KEYS = ("STATUS", "VOL", "TITLE", "TIME", "STATE")
+
+
 def parse_line(line):
     """处理主机一行报文，返回要不要重绘。TIME 例外：它每几秒来一次，
     每次都重启滚动的话歌名永远滚不完整。"""
     global status, title, volume, position, duration, _host_seen, _volume_changed
+    global _last_host_at, _uart_broken
 
     if ":" in line:
         key = line[:line.find(":")]
@@ -264,8 +268,13 @@ def parse_line(line):
         key = line
         value = ""
 
-    if key == "STATUS":
+    if key in _HOST_KEYS:
+        # 认得出来就当主机还在说话：记下时刻，报警了的话也一并清掉
         _host_seen = True
+        _last_host_at = running_time()
+        _uart_broken = False
+
+    if key == "STATUS":
         if value == status:
             # keepalive 每 5 秒重发同样的状态；当成变化会把滚动掐回起点（看着像抽风）
             return False
@@ -276,27 +285,23 @@ def parse_line(line):
             new_volume = int(value)
         except ValueError:
             return False
-        _host_seen = True
         if new_volume == volume:
             return False
         volume = new_volume
         _volume_changed = True
         return True
     if key == "TITLE":
-        _host_seen = True
         if value == title:
             return False
         title = value
         return True
     if key == "TIME":
-        _host_seen = True
         # "37/242" 这种格式；缺一半时另一半保持 ?
         if "/" in value:
             position, duration = value[:value.find("/")], value[value.find("/") + 1:]
         return False
     if key == "STATE":
         # "play|65|37/242"，一次性给全。同理：值没变就不要重绘
-        _host_seen = True
         changed = False
         fields = value.split("|")
         if fields[0] and fields[0] != status:
@@ -424,7 +429,7 @@ def poll_gestures():
         except Exception:
             touched = False
 
-        # 开机第一次轮询只采样：按复位键时手指常在 logo 上，不采样会白送一次暂停
+        # 首次只采样：按复位时手指常在 logo 上，否则白送一次暂停
         if not _logo_primed:
             _logo_primed = True
             _logo_down = bool(touched)
@@ -435,15 +440,15 @@ def poll_gestures():
             if _touch_since == 0:
                 _touch_since = now
             elif now - _touch_since > LOGO_STUCK_MS:
-                # 连续几秒都报「被触摸」= 传感器卡死。再等下去 logo 会永久停在
-                # 已按下状态、再也出不来 PAUSE，不如停用，把暂停交给 A+B 短按
+                # 连续几秒都报被触摸 = 传感器卡死，再等下去出不来 PAUSE，
+                # 不如停用，把暂停交给 A+B 短按
                 HAS_LOGO = False
                 _logo_down = False
                 return None
         else:
             _touch_since = 0
 
-        # 边沿触发：按着只算一次，松手才允许再触发（否则按住会来回切换播放/暂停）
+        # 边沿触发：按着只算一次，松手才允许再触发（否则按住会来回切换）
         if touched and not _logo_down and now - _last_touch_at > TOUCH_DEBOUNCE_MS:
             _logo_down = True
             _last_touch_at = now
@@ -472,6 +477,7 @@ def boot():
 def tick():
     """主循环的一轮。返回 True 表示这一轮有东西要发。"""
     global _handshake_left, _last_query_at, _volume_changed, _uart_retry_at
+    global _uart_broken     # 这里会给它赋值，不加 global 会变成局部变量而报错
 
     now = running_time()
 
@@ -494,6 +500,13 @@ def tick():
 
     # 滚动和音量播报都是异步的，每轮推进一格
     pump_screen(now)
+
+    # CDC 写几乎永不失败（电池供电实测：没主机连着 uart.write 照样成功），
+    # 抓异常这条路走不通。改看主机还说不说话：连上过之后太久没等到报文，
+    # 就是链路悄悄断了 —— 这是抽风时唯一可靠的症状。
+    if _host_seen and not _uart_broken and now - _last_host_at >= HOST_TIMEOUT_MS:
+        _uart_broken = True
+        render()
 
     # 串口挂了就隔一阵重试一次 init，链路自己好起来时不用重启板子
     if _uart_broken and now - _uart_retry_at >= UART_RETRY_MS:
