@@ -79,6 +79,34 @@ def looks_like_text(data):
     return ok / len(data) > 0.85
 
 
+def looks_like_usb_glitch(data):
+    """
+    判断这是不是「按 RESET 导致 USB 重新枚举」的毛刺，而不是固件发的真数据。
+
+    2026-10-09 对照实验：什么键都不按、空跑 25 秒 -> 0 字节；一按 RESET 就立刻
+    冒出十几个字节，形如 b'IIkI*kIkIILIk\\x15IIK*kILI\\x11M...'。它们没有 \\n、
+    夹着 0x15 这类控制字符，既排不成以换行结尾的行，也拼不出任何协议字段。
+
+    而板端真实报文恒以 \\n 结尾，所以「没有换行 + 夹了控制字符」就是噪声的指纹。
+    顺带说：looks_like_text 只要求 85% 可打印，上面那串算下来是 87.5%，
+    会被它误判成正常文本 —— 所以这道判断不能交给它。
+
+    以前没做这层区分，看到毛刺就报「收到数据 / 乱码」，让人以为串口坏了；
+    而脚本自己又建议按 RESET，等于亲手制造了它要报警的东西。
+    """
+    if not data or b"\n" in data:
+        return False                      # 有换行 -> 像真的行结构数据
+    if len(data) >= 64:
+        return False                      # 真数据流不会这么短就停
+    text = data.decode("utf-8", "replace").upper()
+    return not any(cmd in text for cmd in _KNOWN_COMMANDS)
+
+
+# 板端可能发出来的东西；真正的数据里至少会含一个
+_KNOWN_COMMANDS = ("QUERY", "PREV", "NEXT", "VOLUP", "VOLDOWN",
+                   "PAUSE", "STOP", "PANIC", "PING")
+
+
 def find_microbit_drive():
     """找 MICROBIT 那个 U 盘的盘符（靠盘上的 MICROBIT.HTM 认）。"""
     for letter in string.ascii_uppercase:
@@ -233,9 +261,13 @@ def main():
 
     # ---------- [3] 原样监听 ----------
     print("\n[3/5] 原样监听 %d 秒（板子会自己开口吗）" % args.listen)
-    print("  ※ 主固件只在开机后发一阵 QUERY 握手，之后没人按键就一句话不说，")
-    print("    所以「板子已经跑了一会儿」时静默是正常的。")
-    print("    想抓启动瞬间的数据，现在按一下板子背面的 RESET 最有效。")
+    print("  ※ 主固件只在开机后发一阵 QUERY 握手，没人按键时它一句话不说，")
+    print("    所以「板子已经跑了一会儿」时静默是正常的，不代表坏了。")
+    print("    ★ 这几秒里请按一下板子的 A 或 B 键 —— 按键即可让板子开口，")
+    print("      而且不像 RESET 那样引起 USB 重新枚举（重枚举会冒出一串垃圾字节，")
+    print("      以前本脚本会把那串东西当成乱码报出来，白让人紧张半天）。")
+
+    glitch = False
     try:
         total, samples = listen(port, args.listen)
     except Exception as exc:
@@ -249,12 +281,20 @@ def main():
         silent = True
     else:
         silent = False
-        clean = looks_like_text(total)
-        print("  收到 %d 字节，像正常文本？%s" % (len(total), "是" if clean else "否（乱码）"))
-        for raw in samples:
-            print("      %r" % raw[:120])
-        if not clean:
-            print("    → 乱码通常说明波特率不对或线路有干扰")
+        glitch = looks_like_usb_glitch(total)
+        if glitch:
+            print("  收到 %d 字节，但看着是 RESET 毛刺，不是固件数据：" % len(total))
+            print("      %r" % total[:120])
+            print("    → 按 RESET 会让 USB 重新枚举，主机常常采到一撮垃圾字节。")
+            print("      实测：不按键空跑 25 秒是干净的 0 字节 —— 它不代表串口有问题。")
+        else:
+            clean = looks_like_text(total)
+            print("  收到 %d 字节，像正常文本？%s"
+                  % (len(total), "是" if clean else "否（乱码）"))
+            for raw in samples:
+                print("      %r" % raw[:120])
+            if not clean:
+                print("    → 乱码通常说明波特率不对或线路有干扰")
 
     # ---------- [3] REPL 探测 ----------
     print("\n[4/5] REPL 探测（发个空行，看有没有 >>> 回显）")
@@ -294,12 +334,18 @@ def main():
         print("  别去查波特率，也别急着怀疑硬件，先把固件刷进去再说：")
     elif in_repl:
         print("固件没在跑（板子在 REPL）。重刷一次：")
+    elif glitch:
+        print("只收到 USB 毛刺，没抓到任何有效数据 —— 它本身不代表链路坏了。")
+        print("按 RESET 会引起 USB 重新枚举（实测：空跑 25 秒 0 字节，一按就冒出")
+        print("十几个杂字节）。判断链路真正的办法是按键，别用 RESET：")
+        print("  python microbit/key_capture.py --plan       # 按提示依次按键")
+        print("  python microbit/key_capture.py --downlink   # 测下行要不要连")
     elif silent and not in_repl:
         print("板子没开口，两种可能：")
         print("  1) 主固件的开机握手（QUERY）早发完了，没人按键时它本来就不说话（正常）")
         print("  2) 程序确实没跑起来 / 串口没初始化")
-        print("先按一下板子背面的 RESET，再跑一次本脚本：")
-        print("抓得到 QUERY 就是第 1 种，链路没问题。抓不到再重刷固件：")
+        print("先按一下板子的 A 或 B 键再跑一次：")
+        print("抓得到 PREV / NEXT 就是第 1 种，链路没问题。抓不到再往下查：")
     elif not silent and looks_like_text(total):
         print("板子在正常发数据，链路是通的。")
         print("那问题多半在主程序侧（端口配错 / 没启动监听 / 串口被占）。")
