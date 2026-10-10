@@ -7,6 +7,9 @@ import threading
 import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import progress_bar
+import progress_download
+
 
 class DownloadManager:
     """Download manager supporting resumable downloads and multi-threading"""
@@ -170,54 +173,52 @@ class DownloadManager:
             ranges.append((start, end, i))
 
         start_time = time.time()
-        bar_width = 40
 
-        last_print = [0.0]
-
-        def update_progress(force=False):
-            # 每个 chunk 都打印会把控制台刷爆，这里做 0.1 秒节流
-            nonlocal start_time, bar_width
-            now = time.time()
-            if not force and now - last_print[0] < 0.1:
-                return
-            last_print[0] = now
-            elapsed_time = now - start_time
+        # 进度条自己带节流（0.1 秒）和终端宽度自适应，这里不用再管刷新节奏，
+        # 也不用担心行太长被折行 —— 折行会让 \r 回不到行首，每刷一次堆一行。
+        def get_done():
             with self.lock:
-                progress = self.downloaded / self.total_size
-                filled_length = int(bar_width * progress)
-                bar = '█' * filled_length + '-' * (bar_width - filled_length)
-                speed = self.downloaded / elapsed_time if elapsed_time > 0 else 0
-                if speed > 0 and progress < 1:
-                    remaining_time = (self.total_size - self.downloaded) / speed
-                    time_str = f"Remaining: {remaining_time:.1f}s"
-                else:
-                    time_str = "Remaining: calculating..."
-                print(f'\r[{bar}] {progress:.1%} | {self.downloaded:,}/{self.total_size:,} | {speed / 1024 / 1024:.2f} MB/s | {time_str}',
-                      end='', flush=True)
+                return self.downloaded
+
+        def get_total():
+            return self.total_size
+
+        def get_speed():
+            elapsed = time.time() - start_time
+            with self.lock:
+                return self.downloaded / elapsed if elapsed > 0.001 else 0.0
+
+        bar = progress_download.DownloadBar(
+            get_done, get_total, get_speed,
+            max_width=progress_bar.terminal_width() - 1)
 
         part_files = []
         success = True
         completed = 0
 
-        with ThreadPoolExecutor(max_workers=self.threads) as executor:
-            future_to_part = {
-                executor.submit(self._download_part, start, end, part_num, update_progress): part_num
-                for start, end, part_num in ranges
-            }
-            for future in as_completed(future_to_part):
-                part_num = future_to_part[future]
-                try:
-                    part_file, part_success = future.result()
-                    part_files.append(part_file)
-                    completed += 1
-                    if not part_success:
+        bar.start()
+        try:
+            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+                future_to_part = {
+                    executor.submit(self._download_part, start, end, part_num, None): part_num
+                    for start, end, part_num in ranges
+                }
+                for future in as_completed(future_to_part):
+                    part_num = future_to_part[future]
+                    try:
+                        part_file, part_success = future.result()
+                        part_files.append(part_file)
+                        completed += 1
+                        if not part_success:
+                            success = False
+                    except Exception as e:
+                        # 先把条停掉再报错，否则它每 0.1 秒刷一次，报错信息会被冲掉
+                        bar.stop()
+                        print(f"\nException in thread {part_num}: {e}")
+                        bar.start()
                         success = False
-                except Exception as e:
-                    print(f"\nException in thread {part_num}: {e}")
-                    success = False
-
-        update_progress(force=True)
-        print()
+        finally:
+            bar.stop()
 
         if success and completed == len(ranges):
             if self._merge_parts(part_files, self.output_path):
@@ -272,43 +273,40 @@ def _original_download(url, output_path, chunk_size=8192, headers=None):
             print(f"File size: {total_size:,} bytes ({total_size / 1024 / 1024:.2f} MB)")
         print("-" * 60)
 
-        bar_width = 40
-        downloaded = 0
         start_time = time.time()
-        last_print = 0.0
+        state = {"done": 0}          # 闭包里改不了局部变量，用 dict 装
+        lock = threading.Lock()
 
-        with open(output_path, 'wb') as file:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    file.write(chunk)
-                    downloaded += len(chunk)
+        def get_done():
+            with lock:
+                return state["done"]
 
-                    now = time.time()
-                    if now - last_print < 0.1:
-                        continue
-                    last_print = now
+        def get_total():
+            return total_size
 
-                    if total_size:
-                        progress = downloaded / total_size
-                        filled_length = int(bar_width * progress)
-                        bar = '█' * filled_length + '-' * (bar_width - filled_length)
-                        elapsed_time = time.time() - start_time
-                        speed = downloaded / elapsed_time if elapsed_time > 0 else 0
-                        if speed > 0:
-                            remaining_time = (total_size - downloaded) / speed
-                            time_str = f"Remaining: {remaining_time:.1f}s"
-                        else:
-                            time_str = "Remaining: calculating..."
-                        print(f'\r[{bar}] {progress:.1%} | {downloaded:,}/{total_size:,} | {speed / 1024 / 1024:.2f} MB/s | {time_str}',
-                              end='', flush=True)
-                    else:
-                        elapsed_time = time.time() - start_time
-                        speed = downloaded / elapsed_time if elapsed_time > 0 else 0
-                        print(f'\rDownloaded: {downloaded:,} bytes | Speed: {speed / 1024 / 1024:.2f} MB/s',
-                              end='', flush=True)
+        def get_speed():
+            elapsed = time.time() - start_time
+            with lock:
+                return state["done"] / elapsed if elapsed > 0.001 else 0.0
+
+        bar = progress_download.DownloadBar(
+            get_done, get_total, get_speed,
+            max_width=progress_bar.terminal_width() - 1)
+
+        downloaded = 0
+        bar.start()
+        try:
+            with open(output_path, 'wb') as file:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        file.write(chunk)
+                        downloaded += len(chunk)
+                        with lock:
+                            state["done"] = downloaded
+        finally:
+            bar.stop()
 
         total_time = time.time() - start_time
-        print()
         if total_size:
             if downloaded == total_size:
                 print(f"✓ Download complete! Total time: {total_time:.2f}s, Average speed: {downloaded / total_time / 1024 / 1024:.2f} MB/s")

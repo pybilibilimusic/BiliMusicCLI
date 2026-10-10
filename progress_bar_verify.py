@@ -24,8 +24,8 @@ utils.setup_mpv_path()      # 必须在 import mpv 之前
 import mpv                  # noqa: E402
 
 # 渲染函数和刷新线程都在生产模块里，这里只测不重写 —— 免得两边跑偏
-from progress_bar import (BAR_WIDTH, REFRESH_INTERVAL, ProgressBar,
-                          clear_line, format_time, render_bar)
+from progress_bar import (BAR_WIDTH, PAUSE_MARK, REFRESH_INTERVAL, ProgressBar,
+                          clear_line, format_time, render_bar, visible_width)
 
 passed = 0
 failed = 0
@@ -56,7 +56,19 @@ def test_format_time():
 
 def test_render_bar():
     print("\n[2] 进度条渲染")
-    check("起点", render_bar(0, 100).startswith("0:00 [░"), render_bar(0, 100))
+    # 注意：空的那一半原来是 ░(U+2591)，2026-10-10 换成空格了 ——
+    # 那个字符在等宽字体里是一排竖条，像梳子，用户看着很别扭。
+    check("起点", render_bar(0, 100).startswith("0:00 ["), render_bar(0, 100))
+    check("空心部分用空格而不是 ░", "░" not in render_bar(0, 100), render_bar(0, 100))
+    check("暂停标记是纯 ASCII 的 ||",
+          (PAUSE_MARK + " ") in render_bar(0, 100, paused=True),
+          render_bar(0, 100, paused=True))
+    check("不暂停时没有暂停标记",
+          PAUSE_MARK not in render_bar(0, 100, paused=False),
+          render_bar(0, 100, paused=False))
+    narrow = render_bar(50, 100, max_width=20)
+    check("窄终端会自动缩短条（不折行）", visible_width(narrow) <= 20,
+          "%d 列 -> %r" % (visible_width(narrow), narrow))
     check("终点填满", render_bar(100, 100).split("]")[0].endswith("█" * BAR_WIDTH))
     check("总时长写在末尾", render_bar(10, 100).endswith("1:40"))
     check("超出总时长时封顶", render_bar(200, 100) == render_bar(100, 100))
