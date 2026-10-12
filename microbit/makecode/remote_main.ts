@@ -43,8 +43,12 @@ const BEEP_MIN_GAP_MS = 200     // 提示音最短间隔，连按时不叠加
 //
 //     崩溃码 070 = SoftDevice Assert（蓝牙协议栈内部断言失败），
 //     官方论坛原话："有些操作在蓝牙运行时是不能做的"。
-//     V2 上最出名的冲突就是音频 —— 所以第一个要关的就是 USE_BEEP。
-let USE_BEEP = true             // 按键提示音（V2 上音频会和 BLE 抢资源，头号嫌疑）
+//
+//     ✅ 已查实（2026-10-12）：把 USE_BEEP 关掉之后不再崩 —— **元凶就是音频**。
+//     micro:bit V2 上 music 和 BLE 抢资源，按几下键必崩。
+//     所以默认关着，按键反馈改用全屏闪一下（见 flash()）。
+//     想再试就改成 true，但基本可以预期会崩。
+let USE_BEEP = false            // ← 别打开。V2 上音频会把 BLE 掐断（崩溃码 070）
 let USE_GESTURE = true          // 摇一摇（加速度计）
 let USE_LOGO = true             // logo 触摸（这块板子的 logo 传感器本来就坏过）
 let USE_SCROLL = true           // 自写滚动（关掉后只显示静态图标）
@@ -81,8 +85,14 @@ for (let _i = 0; _i < 26; _i++) {
 const ROW_PAUSE = [10, 10, 10, 10, 10]          // 两条竖杠
 const ROW_STOP = [17, 10, 4, 10, 17]            // ✗ 两条对角线
 const ROW_NOTE = [28, 4, 4, 7, 7]               // 八分音符
-const ROW_NOLINK = [4, 4, 4, 0, 4]              // ! 链路断了
+const ROW_NOLINK = [4, 4, 4, 0, 4]              // ! 连上过但主机失联
 const ROW_V = [10, 10, 10, 10, 4]               // 音量前缀 V
+
+// 连接状态四态，各有专属图标 —— 之前连上以后直接走 render()，
+// 没歌名就显示 ✗，看着跟配对失败一样，很容易误会。
+const ROW_OK = [0, 16, 8, 5, 2]                 // √ 刚连上，亮 1.2 秒
+const ROW_WAIT = [0, 0, 14, 0, 0]               // ⋯ 连上了，等主机说话
+const ROW_UNCONNECTED = [31, 17, 17, 17, 31]    // □ 空心方框 = 还没连上
 
 // --- 运行时状态
 let status = "stop"
@@ -126,6 +136,8 @@ let lastTouchAt = 0
 let touchCount = 0
 let lastSendAt = 0
 let lastBeepAt = 0
+let okUntil = 0          // √ 显示到什么时候
+let flashUntil = 0       // 按键反馈闪屏到什么时候
 
 // --- 显示
 function drawRows(rows: number[]) {
@@ -304,6 +316,23 @@ function screenPeriod(): number {
 function render() {
     lastScrollAt = input.runningTime()
     volFrames = []
+    if (okUntil > input.runningTime()) {
+        // 刚连上那一下，先给个确定的 √
+        scrolling = false
+        drawRows(ROW_OK)
+        return
+    }
+    if (!connected) {
+        scrolling = false
+        drawRows(ROW_UNCONNECTED)
+        return
+    }
+    if (!hostSeen) {
+        // 连上了但主机还没说话（在等握手回应）
+        scrolling = false
+        drawRows(ROW_WAIT)
+        return
+    }
     if (linkAlarm) {
         scrolling = false
         drawRows(ROW_NOLINK)
@@ -386,6 +415,7 @@ function parseLine(line: string) {
         hostSeen = true
         lastHostAt = input.runningTime()
         linkAlarm = false
+        okUntil = 0        // 主机开口了，√ 就可以撤了
     }
 
     if (key == "STATUS") {
@@ -540,6 +570,19 @@ function removeFromQueue(k: string) {
 function tick() {
     let now = input.runningTime()
 
+    // 闪屏/对勾的收尾：到点了就回到正常画面
+    if (flashUntil > 0) {
+        if (now >= flashUntil) {
+            flashUntil = 0
+            render()
+        }
+        return          // 只有 120ms，这一轮先不干别的
+    }
+    if (okUntil > 0 && now >= okUntil) {
+        okUntil = 0
+        render()
+    }
+
     let cmd = pollButtons()
     if (cmd.length > 0 && now - lastSendAt >= SEND_MIN_GAP_MS) {
         lastSendAt = now
@@ -550,6 +593,8 @@ function tick() {
             } else {
                 beep(false)
             }
+        } else {
+            flash()     // 没声音就闪一下屏，至少要知道按键被收到了
         }
     }
 
@@ -586,6 +631,8 @@ bluetooth.onBluetoothConnected(function () {
     hostSeen = false
     handshakeLeft = HANDSHAKE_TIMEOUT
     lastQueryAt = 0
+    // 先亮 1.2 秒 √ —— 不然连上了却显示 ✗，看着跟配对失败一样
+    okUntil = input.runningTime() + 1200
     render()
 })
 
@@ -630,6 +677,13 @@ if (USE_GESTURE) {
     input.onGesture(Gesture.Shake, function () {
         send("QUERY")
     })
+}
+
+// 关掉提示音之后的替代反馈：全屏闪一下（120ms）。
+// 音频在 V2 上会掐断 BLE（崩溃码 070），不能用了，得有个别的确认方式。
+function flash() {
+    drawRows([31, 31, 31, 31, 31])
+    flashUntil = input.runningTime() + 120
 }
 
 // logo 触摸：这块板子的 logo 传感器本来就读不到/会粘住，一旦乱触发
