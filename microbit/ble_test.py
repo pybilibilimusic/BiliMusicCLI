@@ -136,26 +136,76 @@ async def step2_scan(seconds, addr):
     return None
 
 
-async def step3_connect(board, dev):
-    head(3, "连接")
+async def step3_connect(board, dev, retries=3):
+    head(3, "连接（最多试 %d 次）" % retries)
     from bleak import BleakClient
-    print("       连 %s ..." % getattr(dev, "address", dev))
-    try:
-        client = BleakClient(dev)
-        await asyncio.wait_for(client.connect(), 15)
-    except Exception as exc:
-        verdict(3, False, "连不上：%s: %s" % (type(exc).__name__, exc), """
-Windows 上最常见的两个原因：
-1. MakeCode 里没开 "No Pairing Required" —— Windows 会要求配对，
-   而 micro:bit 的配对要在屏幕上输 6 位码，很麻烦。回去打开那个开关。
-2. 系统设置 -> 蓝牙里已经把它配对过了 —— 先在 Windows 里"移除该设备"再试。
-另外：板子屏幕这会儿应该是"勾"（说明它认为连上了），
-如果还是叉，那是板子侧没接受连接。""")
+    client = None
+    for i in range(1, retries + 1):
+        print("       第 %d/%d 次连 %s ..." % (i, retries,
+                                               getattr(dev, "address", dev)))
+        try:
+            client = BleakClient(dev)
+            await asyncio.wait_for(client.connect(), 15)
+            break
+        except Exception as exc:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                client = None
+            print("       失败：%s: %s" % (type(exc).__name__, exc))
+            if i < retries:
+                await asyncio.sleep(4)
+
+    if client is None:
+        verdict(3, False, "%d 次都没连上" % retries, """
+板子屏幕这会儿应该是"勾"（说明它认为连上了），如果还是叉，是板子侧没接受。
+按命中率排序的排查梯子：
+1. **关开一次蓝牙**（任务栏蓝牙图标 关 -> 等 5 秒 -> 开）再跑。
+   Windows 会缓存"未配对设备"的服务表，你之前用别的配对模式刷过几次，
+   缓存里的旧表和新固件对不上，就会连上又被拆掉 —— 关开蓝牙即清掉。
+2. 还不行就把 MakeCode 换成 **JustWorks 配对**：
+   Project Settings 里关掉"无需配对"、打开"JustWorks配对(默认)"，重新刷；
+   然后 Windows 设置 -> 蓝牙和其他设备 -> 添加设备 -> 选 BBC micro:bit
+   （JustWorks 不会弹 6 位码，直接就配上了）；配对完再跑本脚本。
+   Windows 对"已配对设备"反而更稳，配一次以后都自动连。
+3. 蓝牙设置里若有 BBC micro:bit 条目，先"移除设备"再试。""")
         return None
+
     board.client = client
     print("       已连接")
-    await client.start_notify(UART_TX, board.on_notify)
+    await asyncio.sleep(0.5)     # 个别栈要缓一下才能稳定订阅
+    try:
+        await client.start_notify(UART_TX, board.on_notify)
+    except Exception as exc:
+        verdict(3, False, "连接上了但订阅通知失败：%s: %s"
+                % (type(exc).__name__, exc), "")
+        dump_services(client)
+        print("""
+判读上面的服务表：
+- 如果根本没有 6e400001...（Nordic UART）-> 固件里没开 UART 服务，
+  或 MakeCode 没加 Bluetooth 扩展 -> 重刷确认 startUartService() 在。
+- 如果有 UART、但 6e400003 的属性里没有 notify -> 这是 Windows 的
+  固件服务表缓存错位（按地址缓存，换固件后句柄对不上）。
+  解法：任务栏把蓝牙 关掉 -> 等 5 秒 -> 再开，然后重跑本脚本。
+  （系统设置里若有 BBC micro:bit 条目也顺手"移除设备"）""")
+        return None
     return client
+
+
+def dump_services(client):
+    print()
+    print("       --- Windows 眼里这块板子的服务表 ---")
+    try:
+        for svc in client.services:
+            print("       服务 %s" % svc.uuid)
+            for ch in svc.characteristics:
+                props = ",".join(sorted(ch.properties))
+                print("         %s  [%s]" % (ch.uuid, props))
+    except Exception as exc:
+        print("       读服务表失败：%s: %s" % (type(exc).__name__, exc))
+    print("       ------------------------------------")
 
 
 async def step4_uplink(board):
@@ -211,7 +261,7 @@ async def main(args):
             return 1
     verdict(2, True, "扫到板子")
 
-    client = await step3_connect(board, dev)
+    client = await step3_connect(board, dev, args.retries)
     if client is None:
         return 1
     verdict(3, True, "连接成功")
@@ -248,6 +298,7 @@ def run():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scan-seconds", type=float, default=12.0)
     ap.add_argument("--addr", default="", help="已知地址，跳过扫描")
+    ap.add_argument("--retries", type=int, default=3, help="连接重试次数")
     args = ap.parse_args()
     try:
         return asyncio.run(main(args))
