@@ -4,7 +4,13 @@ from pathlib import Path
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br, zstd',
+    # ⚠️ 别往这里加 zstd：venv 里没装 zstandard，服务器真返回 zstd 的话
+    #    requests 解不开，r.content 是一坨二进制，.json() 直接抛异常。
+    #    br 同理 —— 必须装 brotli（已写进 requirements.txt）。
+    #    2026-10-12 踩过：B 站对 /x/web-interface/nav 返回 Content-Encoding: br，
+    #    缺 brotli 导致 WBI 密钥取不到，静默回落兜底值（兜底值其实是对的，
+    #    但白白走一次失败，而且看不出真原因）。
+    'Accept-Encoding': 'gzip, deflate, br',
     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
     'Connection': 'keep-alive',
     'sec-ch-ua': '"Microsoft Edge";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',

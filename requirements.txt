@@ -2,6 +2,10 @@
 requests>=2.25.0
 beautifulsoup4>=4.9.0
 urllib3
+# ⚠️ 必须装：B 站会给 API 返回 Content-Encoding: br，
+#    缺了它 requests 解不开，拿到的是一坨二进制，.json() 直接抛异常。
+#    2026-10-12 踩过：表现是"WBI 密钥取不到，回落兜底值"，真因是这个。
+brotli
 
 # ---- 登录（扫码） ----
 qrcode>=7.4

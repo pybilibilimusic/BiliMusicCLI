@@ -48,26 +48,70 @@ FALLBACK_KEYS = (
 _keys_cache: Optional[Tuple[str, str]] = None
 _using_fallback = False          # 当前是否在使用兜底密钥
 _fallback_index = 0              # 当前试到第几组兜底
+_last_error = ""                 # 最近一次取密钥失败的原因（给排查用）
+
+
+def _fetch_keys(timeout: int, gzip_only: bool = False) -> Tuple[Optional[Tuple[str, str]], str]:
+    """
+    打一次 nav 取密钥。返回 (密钥, 失败原因)，成功时失败原因是空串。
+
+    gzip_only=True 时只接受 gzip/deflate —— 用来在「响应没解开」的情况下自愈。
+    以前这里全是 `except Exception: pass`，取不到只知道"失败了"，不知道为什么，
+    排查时只能靠猜（2026-10-12 那次其实是 br 没解压库）。
+    """
+    headers = dict(config.headers)
+    if gzip_only:
+        headers["Accept-Encoding"] = "gzip, deflate"
+
+    try:
+        response = requests.get(NAV_URL, headers=headers, timeout=timeout)
+    except Exception as exc:
+        return None, "nav 请求失败：%r" % (exc,)
+
+    try:
+        payload = response.json()
+    except Exception:
+        return None, ("nav 返回的解不开：HTTP %s | Content-Encoding=%s | %d 字节不是 JSON"
+                      % (response.status_code,
+                         response.headers.get("Content-Encoding") or "无",
+                         len(response.content)))
+
+    wbi_img = (payload.get("data") or {}).get("wbi_img") or {}
+    try:
+        img_key = wbi_img["img_url"].rsplit("/", 1)[-1].split(".")[0]
+        sub_key = wbi_img["sub_url"].rsplit("/", 1)[-1].split(".")[0]
+    except (KeyError, AttributeError):
+        return None, ("nav 没给 wbi_img（code=%s message=%s）"
+                      % (payload.get("code"), payload.get("message")))
+
+    if img_key and sub_key:
+        return (img_key, sub_key), ""
+    return None, "wbi_img 字段是空的"
 
 
 def get_wbi_keys(force_refresh: bool = False, timeout: int = 10) -> Tuple[str, str]:
     """获取 (img_key, sub_key)，优先走接口并缓存，失败则用兜底值。"""
-    global _keys_cache, _using_fallback
+    global _keys_cache, _using_fallback, _last_error
     if _keys_cache and not force_refresh:
         return _keys_cache
 
-    try:
-        response = requests.get(NAV_URL, headers=config.headers, timeout=timeout)
-        wbi_img = response.json().get("data", {}).get("wbi_img", {})
-        img_key = wbi_img["img_url"].rsplit("/", 1)[-1].split(".")[0]
-        sub_key = wbi_img["sub_url"].rsplit("/", 1)[-1].split(".")[0]
-        if img_key and sub_key:
-            _keys_cache = (img_key, sub_key)
-            _using_fallback = False
-            return _keys_cache
-    except Exception:
-        pass
+    keys, err = _fetch_keys(timeout)
+    if keys:
+        _keys_cache = keys
+        _using_fallback = False
+        _last_error = ""
+        return _keys_cache
 
+    # 第一把没成 —— 最常见的就是响应没解开（br/zstd 缺解压库）。
+    # 退成只收 gzip 再试一次，这一把能自愈绝大多数情况。
+    keys, err2 = _fetch_keys(timeout, gzip_only=True)
+    if keys:
+        _keys_cache = keys
+        _using_fallback = False
+        _last_error = ""
+        return _keys_cache
+
+    _last_error = err2 or err or "未知原因"
     _using_fallback = True
     if _keys_cache:
         return _keys_cache
@@ -91,10 +135,18 @@ def using_fallback() -> bool:
     return _using_fallback
 
 
+def last_error() -> str:
+    """上一次取密钥失败的具体原因。空的就说明没失败过。"""
+    return _last_error
+
+
 def fallback_warning() -> str:
-    """给调用方用的提示文案。"""
-    return ("WBI 密钥：nav 接口不可用，已回落内置兜底值。"
+    """给调用方用的提示文案。带上具体原因，别只说"失败了"。"""
+    base = ("WBI 密钥：nav 接口不可用，已回落内置兜底值。"
             "若请求持续失败，多半是密钥已轮换，请到 generate_params.FALLBACK_KEYS 追加新密钥。")
+    if _last_error:
+        return base + "\n  取密钥失败的原因：" + _last_error
+    return base
 
 
 def probe(keys: Tuple[str, str] = None, timeout: int = 10) -> bool:

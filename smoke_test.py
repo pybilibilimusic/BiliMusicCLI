@@ -489,9 +489,11 @@ def test_main_cui():
     cui = main_CUI.MainCui()
     cui.load_config()
     cui.cmd_register()
+    # 注：reconnect 已删 —— 串口方案废了，BLE 走后台自动重连，不用手动敲
+    #     （2026-10-12 清理；别再加回这个断言）
     expected = {'help', 'download', 'voice', 'search', 'cache', 'login', 'exit',
                 'pause', 'transform', 'batch_transform', 'batch_search',
-                'batch_extract', 'reconnect', 'progress', 'feedback'}
+                'batch_extract', 'progress', 'feedback'}
     missing = expected - set(cui.commands)
     assert_true(not missing, f"命令缺失: {missing}")
     # help 命令能正常出结果

@@ -389,7 +389,9 @@ class SongSearch:
             if upto < len(candidates):
                 print(f"（共 {len(candidates)} 条，只显示前 {upto} 条，按 m 展开全部）")
 
-        limit = min(VISIBLE_CANDIDATES, len(candidates))
+        # ⚠️ 必须写 self. —— 光秃秃的 VISIBLE_CANDIDATES 在方法里找不到类属性，
+        #    会 NameError（冒烟测试就是这么抓到的）
+        limit = min(self.VISIBLE_CANDIDATES, len(candidates))
         print_list(limit)
         print("输入编号选择（直接回车用第一条），'m' 展开全部，'r' 翻页，'q' 退出：",
               end="", flush=True)
