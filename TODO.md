@@ -278,8 +278,39 @@ DTR/RTS 四种组合、在接收位流里直接搜 `PING:uart` 的原始比特
 
 **结论：板载串口死了，但 BLE 完全正常。** 下一步是移植固件（见下一条 P1）。
 
+### 移植 Demo（2026-10-12，等他试）
+
+- `microbit/makecode/remote_main.ts` —— `microbit_remote.py`(542 行) 的 MakeCode TS 移植，
+  按键映射和协议跟 Python 版完全一致
+- `microbit/ble_demo.py` —— 电脑端模拟播放器（每秒 STATE / 5 秒 keepalive /
+  按键照做），用来肉眼验证整套交互
+
+**怎么玩**：先刷 `remote_main.ts`（同样要开 No Pairing Required）→
+跑 `.\.venv\Scripts\python.exe microbit\ble_demo.py` → 按板子上的键，
+屏幕该滚「歌名 已播/总长」，按 A+B 出暂停双杠，长指出 STOP 的 ✗。
+
+**移植要点（别改回去）**：
+1. MakeCode 的 `basic.showString()` 是**阻塞**的，30 字符歌名能卡 28 秒，
+   期间按键和蓝牙全没人管 → 自带 3x5 字模 + 手写非阻塞滚动（列缓冲，每 150ms 推一列）
+2. 提示音必须 `PlaybackMode.InBackground`，前台播放会把 BLE 栈掐断
+3. `strIndexOf` / `arrIndexOf` / `toNumber` 全是手写的 —— MakeCode 静态 TS
+   对 `indexOf` / `parseInt` / `isNaN` / `String.fromCharCode` 支持不全
+4. BLE 有明确的连接/断开事件，比串口版靠超时猜可靠；断开会重置状态重新握手
+
+整合进 `main_CUI.py`（把串口桥换成 BLE 桥）**等他说合格再做**。
+
 ### 踩坑预警
 
+- ⚠️ **micro:bit 的 BLE UART 收发缓冲都只有 20 字节**，长报文会被切碎
+  （实测：28 字节的 `TITLE:` 一行，板子收到的是两截）。
+  主机侧拆成 **19 字节**小片 + 单独补 `\n`；板端侧自己攒缓冲按 `\n` 分行。
+  这一条同样适用于将来往板子写任何东西。
+- ⚠️ **micro:bit 的 UART 服务跟 Nordic 标准是反的**（2026-10-12 血泪坑）：
+  `6e400003` = 电脑往这写、`6e400002` = 板子从这发（而且用 **indicate** 不是 notify）。
+  套标准 NUS 会报 `characteristic does not support notifications`。
+   Espruino 文档原话："The micro:bit's UART isn't actually a standard Nordic UART"。
+- ⚠️ **强行中断脚本后板子会停止广播**（它还以为自己连着）。
+  扫不到就按一下板子背面的 RESET。
 - 板子长鸣/长旋律会掐断 BLE 栈 —— 提示音必须 `PlaybackMode.InBackground` 且很短
 - 默认 ATT MTU 只有 23，一次最多发 **20 字节**，长了要切段（`ble_bridge.py` 已处理）
 - MakeCode 加了 Bluetooth 之后 **radio 模块会消失**（二者互斥）—— 我们用不到 radio
