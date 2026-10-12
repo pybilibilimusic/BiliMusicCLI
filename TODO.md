@@ -225,6 +225,64 @@ DTR/RTS 四种组合、在接收位流里直接搜 `PING:uart` 的原始比特
 
 ---
 
+## BLE 路线：绕开坏掉的串口（2026-10-12 评估）
+
+板载串口（目标芯片 TX → 接口芯片 RX）坏了，但 **BLE 射频也在目标芯片 nRF52833 上**，
+**压根不经过那颗接口芯片**。所以走蓝牙能**完全绕开**坏掉的那段，而且顺带把
+"遥控"从 USB 牵线的变成**真无线**（电池供电，脱离电脑），课题展示效果更好。
+
+### 已验证的事实（别再重复查）
+
+| 事实 | 来源 |
+|---|---|
+| **MicroPython 不支持 BLE，二者二选一** | micro:bit 官方支持页原话："BLE is not supported in MicroPython"；V2 的 BLE 目前只用于 BLE 刷机 |
+| 刷过 MicroPython 后 BLE/DFU 就没了，要刷 **MakeCode** 固件才找回来 | micro:bit 基金会支持文档 |
+| MakeCode 有现成的 **BLE UART 服务**，可在 Project Settings 里设 **No Pairing Required** | MakeCode 官方文档 + 多个实测教程 |
+| **这台笔记本 BLE 完全可用** | 实测：Intel 无线蓝牙 + 蓝牙支持服务 Running；`ble_scan.py` 扫到 8 个设备 |
+
+### 三条实现路径，成本差一个数量级
+
+| 路径 | 成本 | 说明 |
+|---|---|---|
+| **A. MakeCode（TS/积木）** ⭐ | 低：浏览器编辑、零工具链 | 官方 BLE UART 服务开箱即用；**推荐** |
+| B. CODAL C++ | 高：ARM GCC + CMake + Ninja + Git + 克隆 CODAL | 有别的 AI 推荐过。能力更强，但为此多装一整套工具链不值 |
+| C. CH340/CP2102 走 P0/P1 | 极低：10 块钱 + 固件改一行 | **保底**：保留全部现有代码和 74 条测试，但仍是 USB 牵线 |
+
+**结论：先试 A，A 不通再谈 B；C 始终是最便宜的保底。**
+
+### A 的落地步骤（照做，顺序不能变）
+
+1. 打开 <https://makecode.microbit.org/> 新建项目
+2. **Advanced → Extensions → 加 Bluetooth**（会提示移除 Radio，选是）
+3. **齿轮 → Project Settings → 打开 "No Pairing Required"** ← ★ 不做这步 Windows 会卡在配对 ★
+4. 切 JavaScript 视图，整份粘入 **`microbit/makecode/ble_min_test.ts`**（覆盖）
+5. **用 WebUSB 刷**（别拖盘，这台机器的 MSD 刷写是坏的）
+6. 电脑端跑 **`.\.venv\Scripts\python.exe microbit\ble_test.py`**
+
+它分五步给结论：环境 → 扫描 → 连接 → 上行(PING) → 回环(PONG，同时验下行)。
+**挂在哪一步就照那一步的提示查**，不用瞎猜。五步全过才谈下一步。
+
+⚠️ 别一上来就搞完整固件 —— 先跑这个最小测试。测试不过的话，
+移植完 542 行也还是不通，白写。
+
+### 踩坑预警
+
+- 板子长鸣/长旋律会掐断 BLE 栈 —— 提示音必须 `PlaybackMode.InBackground` 且很短
+- 默认 ATT MTU 只有 23，一次最多发 **20 字节**，长了要切段（`ble_bridge.py` 已处理）
+- MakeCode 加了 Bluetooth 之后 **radio 模块会消失**（二者互斥）—— 我们用不到 radio
+- 现有 74 条离线自检（`check_remote.py`）测的是 MicroPython 固件，
+  移植到 MakeCode 后**这套测试会失效**，需要另写，这是移植的隐性成本
+
+### 工具（就两个，别再加）
+
+- `microbit/makecode/ble_min_test.ts` —— 板端最小测试固件（连上出勾、每秒 PING、收到就回 PONG）
+- `microbit/ble_test.py` —— 电脑端五步测试，每步带针对性排查提示
+
+（早先还写过 `ble_scan.py` / `ble_bridge.py`，已删：功能分别是第 2 步的子集、
+和"真正开始用之后才需要的交互桥"，现阶段留着只会让人刷错文件。）
+
+---
+
 ## 已知的坑（踩过就别再踩）
 
 ### 别用 `msvcrt` 做倒计时 / 交互输入
