@@ -297,7 +297,37 @@ DTR/RTS 四种组合、在接收位流里直接搜 `PING:uart` 的原始比特
    对 `indexOf` / `parseInt` / `isNaN` / `String.fromCharCode` 支持不全
 4. BLE 有明确的连接/断开事件，比串口版靠超时猜可靠；断开会重置状态重新握手
 
-整合进 `main_CUI.py`（把串口桥换成 BLE 桥）**等他说合格再做**。
+### 已整合进主程序（2026-10-12）
+
+- `microbit/microbit_bridge_ble.py` —— `MicrobitBridge` 的**子类，只换传输层**，
+  协议解析/状态缓存/keepalive/回调分发全部复用父类，串口那份一行没改
+- `main_CUI.py` —— 按 `config.ini` 的 `transport` 二选一（默认 `ble`）
+- `config.ini` —— 新增 `transport = ble | serial`
+- `microbit/microbit_bridge_ble_verify.py` —— 离线 17/17 + `--live` 连真板子
+- 备份在 `backup/2026-10-12-ble-integration/`
+
+### 整合时新踩的坑（都记下来，别再踩一遍）
+
+1. **bleak 在子线程里必须先 `CoInitializeEx(None, 0x0)`（MTA）** ⭐ 最坑的一条  
+   主线程本来就满足，所以 `ble_test.py` / `ble_demo.py` 从来没遇到；  
+   一进 `main_CUI` 的后台线程，`connect()` 就**直接卡死**（扫描反而正常）。  
+   ⚠️ 反过来初始化成 STA 更糟：bleak 内部 `assert_mta()` 会抛错。
+2. **板子偶发 `Could not get GATT services: Unreachable`** —— 连不上不一定是代码的锅。  
+   经历多次连断后板子会卡在"以为自己还连着"的状态，**按背面 RESET** 就好。
+3. `stop()` 在循环没跑时别 `run_coroutine_threadsafe`，否则退出刷一屏
+   `"coroutine ... was never awaited"` 警告。已加 `is_running()` 判断。
+4. 板端**绝对不能播音频**（会 SoftDevice Assert 崩，码 070）—— 见上一节。
+
+### 板的 USB 那半边在坏，但项目不受影响（2026-10-12）
+
+- USB 枚举**间歇性失败**（"未知 USB 设备 / 设备描述符请求失败"），
+  换口、卸载设备、RESET 放电都没用，过一阵又自己好 —— 硬件级间歇故障
+- **换一根线就好了** → 那根 10 块钱的 microUSB 线是主要嫌疑（之前我把它洗清了，洗早了）
+- ⚠️ 差点误判：I: 盘（项目所在的 U 盘）同时掉线过一次，结果是**转接头松了**，虚惊一场
+- **日常使用不依赖 USB**：遥控走 BLE，板子电池供电，USB 只在刷固件时才需要
+- 万一 USB 彻底死透，刷固件还有路：手机 + micro:bit 官方 App（V2 连按 3 次 RESET
+  进蓝牙配对模式，空中刷 .hex）；MakeCode 网页的 Bluetooth Download 在 V2 上
+  有已知 bug（可能只把 hex 存到本地），**他实测也不好用**，别指望它
 
 ### 踩坑预警
 

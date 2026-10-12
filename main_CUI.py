@@ -682,7 +682,7 @@ class MainCui:
 
     def cmd_reconnect(self, args):
         """Manually reconnect micro:bit"""
-        if not self.microbit_port:
+        if self.microbit_transport == 'serial' and not self.microbit_port:
             print(self._('microbit_port_not_configured'))
             return
         print(self._('microbit_reconnecting'))
@@ -984,6 +984,32 @@ class MainCui:
             self._microbit.stop()
             self._microbit = None
 
+        if self.microbit_transport == 'ble':
+            # 蓝牙不需要串口号（板子可以电池供电，完全不插 USB）
+            try:
+                import microbit_bridge_ble
+            except ImportError:
+                print(self._('microbit_error').format('microbit_bridge_ble missing'))
+                return
+            self._microbit = microbit_bridge_ble.MicrobitBleBridge(
+                callbacks={
+                    "toggle_pause": lambda: self.cmd_pause([]),
+                    "next_track": self._auto_play_next,
+                    "prev_track": self._play_prev_track,
+                    "stop": lambda: (self.player.stop(),
+                                     self._send_microbit_status("stop")),
+                    "adjust_volume": self._adjust_volume,
+                    "set_volume": self._adjust_volume_absolute,
+                    "get_state": self._microbit_state,
+                    "log": self._microbit_log,
+                },
+            )
+            if not self._microbit.start():
+                self._microbit = None
+                return
+            self._microbit.send_state()
+            return
+
         if not self.microbit_port:
             return
 
@@ -1016,7 +1042,8 @@ class MainCui:
     def _microbit_log(self, message):
         """把 bridge 的内部提示接回语言包，避免中英文混着打。"""
         if "connected on" in message:
-            print(self._('microbit_connected').format(self.microbit_port))
+            who = self.microbit_port if self.microbit_transport == 'serial' else 'BLE'
+            print(self._('microbit_connected').format(who))
         else:
             print(self._('microbit_error').format(message))
 
@@ -1047,6 +1074,12 @@ class MainCui:
             threads=self.threads, temp_dir=self.temp_dir, m4s_temp=self.m4s_dir, timeout=self.timeout
         )
         self.microbit_port = self.initial_setup.config.get('microbit', 'port', fallback='')
+        # 板子的 USB 串口链路坏了（见 TODO「搁置：micro:bit 串口」），
+        # 默认走 BLE；设成 serial 就退回原来的串口实现。
+        self.microbit_transport = self.initial_setup.config.get(
+            'microbit', 'transport', fallback='ble').strip().lower()
+        if self.microbit_transport not in ('ble', 'serial'):
+            self.microbit_transport = 'ble'
         # 语言：兼容 "English" / "中文" 等历史写法
         self.lang_code = lang.normalize(
             self.initial_setup.config.get('language', 'language', fallback='zh'), 'zh'
@@ -1056,7 +1089,7 @@ class MainCui:
         if not config.load_cookie_dict():
             print(self._('login_not_logged_in'))
 
-        if self.microbit_port:
+        if self.microbit_port or self.microbit_transport == 'ble':
             self._init_microbit_listener()
 
     def check_first_run(self):
