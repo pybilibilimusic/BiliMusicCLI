@@ -62,6 +62,9 @@ class Demo:
             await self.client.write_gatt_char(UART_TO_BOARD,
                                               payload[i:i + CHUNK],
                                               response=False)
+            # 连着猛写也会把板子上的协议栈写崩（见崩溃码 070），分片之间喘口气
+            if len(payload) > CHUNK:
+                await asyncio.sleep(0.02)
         print("  +%6.1fs  -> %s" % (time.time() - self.t0, line))
 
     async def push_title(self):

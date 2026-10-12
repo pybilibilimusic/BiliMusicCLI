@@ -38,10 +38,15 @@ const BRIGHT = 110              // 点阵亮度（满 255；晚上看久了刺�
 const SEND_MIN_GAP_MS = 150     // 两条指令之间最短间隔，别把 BLE 灌爆
 const BEEP_MIN_GAP_MS = 200     // 提示音最短间隔，连按时不叠加
 
-// --- 二分开关。刷进去会崩的话，从上往下依次设成 false，能崩的那个就是元凶。
-//     每改一个就重刷一次，按这个顺序试：USE_BEEP -> USE_LOGO -> USE_SCROLL
-let USE_BEEP = true             // 按键提示音（V2 上音频会掐断 BLE 栈）
-let USE_LOGO = true             // logo 触摸（这块板子的 logoSensor 本来就坏过）
+// --- 二分开关。崩一次就把下面依次设成 false，轮到哪个不崩了就是元凶。
+//     每次只改一个，改完重刷（这是一早就准备好的定位顺序，照走就行）
+//
+//     崩溃码 070 = SoftDevice Assert（蓝牙协议栈内部断言失败），
+//     官方论坛原话："有些操作在蓝牙运行时是不能做的"。
+//     V2 上最出名的冲突就是音频 —— 所以第一个要关的就是 USE_BEEP。
+let USE_BEEP = true             // 按键提示音（V2 上音频会和 BLE 抢资源，头号嫌疑）
+let USE_GESTURE = true          // 摇一摇（加速度计）
+let USE_LOGO = true             // logo 触摸（这块板子的 logo 传感器本来就坏过）
 let USE_SCROLL = true           // 自写滚动（关掉后只显示静态图标）
 
 // --- 3x5 字模。每行用 3 位二进制表示（bit2=最左列），一个字形 = 5 行。
@@ -620,9 +625,12 @@ bluetooth.onUartDataReceived(serial.delimiters(Delimiters.NewLine), function () 
 })
 
 // --- 手势
-input.onGesture(Gesture.Shake, function () {
-    send("QUERY")
-})
+// 摇一摇也要开关：加速度计跟 BLE 同时跑同样有嫌疑
+if (USE_GESTURE) {
+    input.onGesture(Gesture.Shake, function () {
+        send("QUERY")
+    })
+}
 
 // logo 触摸：这块板子的 logo 传感器本来就读不到/会粘住，一旦乱触发
 // 就会疯狂往外发 PAUSE 并叠背景音，很容易把 BLE 撑爆。加两道保险：
