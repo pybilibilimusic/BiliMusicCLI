@@ -233,6 +233,7 @@ class MainCui:
         self.lang_code = 'zh'
         self.mic_index = -1
         self.microbit_port = None
+        self._last_microbit_error = ""   # BLE 报错去重，防止刷屏
 
         # Cache database
         self.cache = CacheManager()
@@ -680,14 +681,6 @@ class MainCui:
         print()
         print(self._('feedback_hint'))
 
-    def cmd_reconnect(self, args):
-        """Manually reconnect micro:bit"""
-        if self.microbit_transport == 'serial' and not self.microbit_port:
-            print(self._('microbit_port_not_configured'))
-            return
-        print(self._('microbit_reconnecting'))
-        self._init_microbit_listener()
-
     def cmd_batch_search(self, args):
         """
         Batch download .m4s files from a text file without conversion.
@@ -1044,8 +1037,15 @@ class MainCui:
         if "connected on" in message:
             who = self.microbit_port if self.microbit_transport == 'serial' else 'BLE'
             print(self._('microbit_connected').format(who))
-        else:
-            print(self._('microbit_error').format(message))
+            return
+        # ⚠️ BLE 是后台一直重连的，连不上会反复打同一句话 ——
+        #    以前直接刷屏能把正在看的搜索结果全冲掉。这里做去重：
+        #    同一句话只打一次，换行也压成一行。
+        flat = " ".join(str(message).split())
+        if flat == self._last_microbit_error:
+            return
+        self._last_microbit_error = flat
+        print(self._('microbit_error').format(flat))
 
     def _adjust_volume_absolute(self, value):
         """micro:bit 直接给绝对值时的入口（adjust_volume 需要的是增量）。"""
@@ -1155,8 +1155,6 @@ class MainCui:
                               brief=self._('cmd_cache_brief'), usage=self._('cmd_cache_usage'))
         self.register_command('search', self.cmd_search,
                               brief=self._('cmd_search_brief'), usage=self._('cmd_search_usage'))
-        self.register_command('reconnect', self.cmd_reconnect,
-                              brief=self._('cmd_reconnect_brief'), usage=self._('cmd_reconnect_usage'))
         self.register_command('batch_transform', self.cmd_batch_transform,
                               brief=self._('cmd_batch_transform_brief'), usage=self._('cmd_batch_transform_usage'))
         self.register_command('batch_search', self.cmd_batch_search,

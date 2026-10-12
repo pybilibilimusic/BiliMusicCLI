@@ -26,6 +26,11 @@ import time
 import sys
 from typing import Optional
 
+import os
+
+# 设 BILIMUSIC_MICROBIT_DEBUG=1 才把 BLE 的堆栈写进 temp/microbit_ble.log
+DEBUG = os.environ.get("BILIMUSIC_MICROBIT_DEBUG") == "1"
+
 from microbit_bridge import MicrobitBridge, _KEEPALIVE_INTERVAL
 
 # ⚠️ 反的，别照抄标准 NUS
@@ -36,7 +41,13 @@ CHUNK = 19          # 板子的 BLE 缓冲只有 20 字节，留 1 给换行
 CHUNK_GAP = 0.02    # 分片之间喘口气，连着猛写会把板上协议栈写崩（崩溃码 070）
 DEFAULT_SCAN_SECONDS = 10.0
 CONNECT_WAIT_EXTRA = 20.0
-CONNECT_RETRIES = 3        # 板子偶发连不上（WinRT 报 Unreachable），重试再放弃    # 扫描之外再多给连接留的时间
+RECONNECT_INTERVAL = 5.0   # 掉线/连不上之后隔多久再试（静默重试，不刷屏）
+
+
+def _tb() -> str:
+    """取当前异常堆栈。独立出来是因为只有调试时才需要。"""
+    import traceback
+    return traceback.format_exc()
 
 
 class MicrobitBleBridge(MicrobitBridge):
@@ -157,21 +168,22 @@ class MicrobitBleBridge(MicrobitBridge):
             self._log("micro:bit BLE: 没扫到板子（板子通电了吗？固件是 MakeCode 吗？）")
             return
 
-        # 板子偶发连不上（WinRT 侧常见 "Unreachable"），重试几次再放弃
-        last_err = None
-        for attempt in range(1, CONNECT_RETRIES + 1):
+        # 板子偶发连不上（WinRT 侧常见 "Unreachable"），而且掉线也是常态 ——
+        # 所以在 _running 期间一直重连，不达成就安静等着，别刷屏打扰用户。
+        attempt = 0
+        while self._running:
+            attempt += 1
             try:
-                last_err = None
                 await self._connect_and_serve(BleakClient, dev)
-                return
+                if not self._running:
+                    return
             except Exception as exc:
-                last_err = exc
-                self._log("micro:bit BLE 第 %d/%d 次连接失败：%r"
-                          % (attempt, CONNECT_RETRIES, exc))
-                await asyncio.sleep(2)
-        if last_err is not None:
-            self._log("micro:bit BLE 连不上：%r" % (last_err,))
-        return
+                self._debug("connect failed #%d: %r\n%s"
+                            % (attempt, exc, _tb()))
+            if attempt == 1:
+                # 第一次失败才告诉用户一声，后面的重试都静默
+                self._log("micro:bit 还没连上（还在重试）")
+            await asyncio.sleep(RECONNECT_INTERVAL)
 
     async def _connect_and_serve(self, client_cls, dev):
         try:
@@ -190,11 +202,11 @@ class MicrobitBleBridge(MicrobitBridge):
                         last_keepalive = time.time()
                         self.send_state()
         except Exception as exc:
-            # 带上堆栈：这种异步里的错光看报错信息定位不到
-            import traceback
-            self._log("micro:bit BLE error: %r\n%s"
-                      % (exc, traceback.format_exc()))
-            raise          # 抛给上层，好让它重试
+            # ⚠️ 以前这里直接把整段 traceback 打给用户，一旦连不上就刷满屏，
+            #    把正在看的搜索结果全冲掉了。现在堆栈只进调试通道（_debug），
+            #    用户侧只看到一句短提示。
+            self._debug("BLE error: %r\n%s" % (exc, _tb()))
+            raise          # 抛给上层，好让它重连
         finally:
             self._linked = False
             self._client = None
@@ -212,6 +224,20 @@ class MicrobitBleBridge(MicrobitBridge):
             except Exception:
                 pass
         self._client = None
+
+    def _debug(self, message: str):
+        """调试信息：只在 BILIMUSIC_MICROBIT_DEBUG=1 时写文件，不占控制台。"""
+        if not DEBUG:
+            return
+        try:
+            import os
+            path = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "temp", "microbit_ble.log")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write("%s  %s\n" % (time.strftime("%H:%M:%S"), message))
+        except Exception:
+            pass
 
     async def _find_board(self, scanner_cls):
         try:
@@ -249,7 +275,7 @@ class MicrobitBleBridge(MicrobitBridge):
                 if len(payload) > CHUNK:
                     await asyncio.sleep(CHUNK_GAP)
         except Exception as exc:
-            self._log("micro:bit BLE write failed: %r" % (exc,))
+            self._debug("BLE write failed: %r" % (exc,))
 
     # ---------- 接收（BLE 线程调用） ----------
 

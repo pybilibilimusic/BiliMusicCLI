@@ -54,6 +54,7 @@ class SongSearch:
 
     # ---- 过滤参数（可调，做消融实验时改这里） ----
     MAX_DURATION = 600          # 超过 10 分钟基本不是单曲
+    VISIBLE_CANDIDATES = 5      # 手动搜索默认只列前几条（按 m 展开全部）
     GOOD_DURATION = (90, 420)   # 正常单曲时长区间，命中给加分
 
     # 注意：以下两个词表均按「大小写不敏感」匹配，无需重复登记不同大小写形式。
@@ -366,21 +367,32 @@ class SongSearch:
             print(f"No usable results found (raw: {len(items)}).")
             return None, None
 
-        print("\n" + "=" * 60)
-        for index, item in enumerate(candidates, 1):
-            shown = item.get("clean") or item["title"]
-            extra = []
-            if item.get("duration") is not None:
-                minutes, seconds = divmod(item["duration"], 60)
-                extra.append(f"{minutes}:{seconds:02d}")
-            if item.get("typename"):
-                extra.append(item["typename"])
-            if item.get("play"):
-                extra.append(f"播放 {item['play']:,}")
-            print(f"{index}. [{item['score']}] {shown}")
-            if extra:
-                print(f"     {' | '.join(extra)}")
-        print("输入编号选择（直接回车用第一条），'r' 翻页，'q' 退出：", end="", flush=True)
+        # 热门歌往往有一堆同名版本，几十条铺下来根本没法选。
+        # 默认只列前 VISIBLE 条，按 'm' 再展开全部。
+        shown_all = False
+
+        def print_list(upto):
+            print("\n" + "=" * 60)
+            for index, item in enumerate(candidates[:upto], 1):
+                shown = item.get("clean") or item["title"]
+                extra = []
+                if item.get("duration") is not None:
+                    minutes, seconds = divmod(item["duration"], 60)
+                    extra.append(f"{minutes}:{seconds:02d}")
+                if item.get("typename"):
+                    extra.append(item["typename"])
+                if item.get("play"):
+                    extra.append(f"播放 {item['play']:,}")
+                print(f"{index}. [{item['score']}] {shown}")
+                if extra:
+                    print(f"     {' | '.join(extra)}")
+            if upto < len(candidates):
+                print(f"（共 {len(candidates)} 条，只显示前 {upto} 条，按 m 展开全部）")
+
+        limit = min(VISIBLE_CANDIDATES, len(candidates))
+        print_list(limit)
+        print("输入编号选择（直接回车用第一条），'m' 展开全部，'r' 翻页，'q' 退出：",
+              end="", flush=True)
 
         # 埋点：把用户本来就做的动作记下来（记失败也不影响选歌）。
         # picked_index 是 0-based —— 选第 1 个就记 0。
@@ -397,6 +409,13 @@ class SongSearch:
             if user_input == "q":
                 print("已取消搜索。")
                 return remember("cancel")
+            if user_input == "m" and not shown_all:
+                shown_all = True
+                limit = len(candidates)
+                print_list(limit)
+                print("输入编号选择（直接回车用第一条），'r' 翻页，'q' 退出：",
+                      end="", flush=True)
+                continue
             if user_input == "r":
                 if retry >= 4:
                     print("翻页次数过多，已结束搜索。")
