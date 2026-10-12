@@ -429,8 +429,9 @@ function trimStr(s: string): string {
 // --- 按键
 function pollButtons(): string {
     let now = input.runningTime()
-    let a = input.buttonA.isPressed()
-    let b = input.buttonB.isPressed()
+    // MakeCode 没有 input.buttonA 对象，轮询用 buttonIsPressed(Button.A)
+    let a = input.buttonIsPressed(Button.A)
+    let b = input.buttonIsPressed(Button.B)
 
     if (a && !aDown) {
         aDown = true
