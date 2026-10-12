@@ -36,7 +36,8 @@ UART_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #    搞反了会报 characteristic does not support notifications。
 UART_TO_BOARD = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"     # 主机 -> 板子
 UART_FROM_BOARD = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"   # 板子 -> 主机
-CHUNK = 20          # 默认 ATT MTU 23，扣头剩 20
+# 板子的 BLE 收发缓冲都只有 20 字节，留 1 字节给 \n
+CHUNK = 19
 
 OK = "[OK]  "
 NG = "[!!]  "
