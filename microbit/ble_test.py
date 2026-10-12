@@ -24,8 +24,18 @@ import asyncio
 import sys
 import time
 
-UART_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"   # 主机 -> 板子
-UART_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"   # 板子 -> 主机
+UART_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+
+# ⚠️ 这里有个大坑：micro:bit 的 UART 服务虽然用的是 Nordic UART 的 UUID，
+#    但收发方向跟标准是**反的**，而且用 indicate 而不是 notify。
+#    Espruino 官方文档原话："The micro:bit's UART isn't actually a standard
+#    Nordic UART"，所以不能拿标准 NUS 的用法套。
+#    实测学到的服务属性：
+#      6e400003  [write, write-without-response]   <- 电脑往这写（真·RX）
+#      6e400002  [indicate]                        <- 板子从这发（真·TX）
+#    搞反了会报 characteristic does not support notifications。
+UART_TO_BOARD = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"     # 主机 -> 板子
+UART_FROM_BOARD = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"   # 板子 -> 主机
 CHUNK = 20          # 默认 ATT MTU 23，扣头剩 20
 
 OK = "[OK]  "
@@ -79,7 +89,7 @@ class Board:
     async def send(self, line):
         payload = (line + "\n").encode("utf-8")
         for i in range(0, len(payload), CHUNK):
-            await self.client.write_gatt_char(UART_RX, payload[i:i + CHUNK],
+            await self.client.write_gatt_char(UART_TO_BOARD, payload[i:i + CHUNK],
                                               response=False)
 
 
@@ -177,7 +187,7 @@ async def step3_connect(board, dev, retries=3):
     print("       已连接")
     await asyncio.sleep(0.5)     # 个别栈要缓一下才能稳定订阅
     try:
-        await client.start_notify(UART_TX, board.on_notify)
+        await client.start_notify(UART_FROM_BOARD, board.on_notify)
     except Exception as exc:
         verdict(3, False, "连接上了但订阅通知失败：%s: %s"
                 % (type(exc).__name__, exc), "")
@@ -270,7 +280,7 @@ async def main(args):
     down = await step5_loopback(board) if up else False
 
     try:
-        await client.stop_notify(UART_TX)
+        await client.stop_notify(UART_FROM_BOARD)
     except Exception:
         pass
     try:
