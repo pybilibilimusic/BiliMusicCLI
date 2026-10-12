@@ -35,6 +35,14 @@ const TOUCH_DEBOUNCE_MS = 400
 const HANDSHAKE_TIMEOUT = 15    // 开机后最多发这么多次 QUERY
 const HOST_TIMEOUT_MS = 15000   // 连上过主机后，这么久没报文就告警
 const BRIGHT = 110              // 点阵亮度（满 255；晚上看久了刺眼）
+const SEND_MIN_GAP_MS = 150     // 两条指令之间最短间隔，别把 BLE 灌爆
+const BEEP_MIN_GAP_MS = 200     // 提示音最短间隔，连按时不叠加
+
+// --- 二分开关。刷进去会崩的话，从上往下依次设成 false，能崩的那个就是元凶。
+//     每改一个就重刷一次，按这个顺序试：USE_BEEP -> USE_LOGO -> USE_SCROLL
+let USE_BEEP = true             // 按键提示音（V2 上音频会掐断 BLE 栈）
+let USE_LOGO = true             // logo 触摸（这块板子的 logoSensor 本来就坏过）
+let USE_SCROLL = true           // 自写滚动（关掉后只显示静态图标）
 
 // --- 3x5 字模。每行用 3 位二进制表示（bit2=最左列），一个字形 = 5 行。
 //     例如 "25755" = 111/101/111/101/101 -> A
@@ -110,6 +118,9 @@ let pressQueue: string[] = []   // 待判定的键
 let pressQueueAt: number[] = []
 let comboAt = -1
 let lastTouchAt = 0
+let touchCount = 0
+let lastSendAt = 0
+let lastBeepAt = 0
 
 // --- 显示
 function drawRows(rows: number[]) {
@@ -186,7 +197,11 @@ function send(line: string) {
 }
 
 function beep(up: boolean) {
-    // 必须 Background，否则会把 BLE 栈掐断
+    // 连按时别叠加背景音堆叠，也别把 BLE 栈挤爆
+    let t = input.runningTime()
+    if (t - lastBeepAt < BEEP_MIN_GAP_MS) { return }
+    lastBeepAt = t
+    // 必须 Background 模式，否则会把 BLE 栈掐断
     if (up) {
         music.play(music.tonePlayable(Note.C5, 60), music.PlaybackMode.InBackground)
     } else {
@@ -222,10 +237,16 @@ function startScroll(text: string) {
     scrollNextAt = 0
     scrolling = scrollCols.length > 5
     if (!scrolling) {
-        // 短到不用滚：直接静态显示前 5 列（多半是纯数字时间）
+        // 短到不用滚：直接静态显示前 5 列
+        // ⚠️ 这里原来直接 push(scrollCols[x])，文本太短时会越界取到 undefined，
+        //    后面拿它做位运算就可能炸 —— 短歌名/纯数字时间最容易踩到。
         let w: number[] = []
         for (let x = 0; x < 5; x++) {
-            w.push(scrollCols[x])
+            if (x < scrollCols.length) {
+                w.push(scrollCols[x])
+            } else {
+                w.push(0)
+            }
         }
         // 转成行掩码画出来
         let rows: number[] = [0, 0, 0, 0, 0]
@@ -293,10 +314,11 @@ function render() {
         drawRows(ROW_STOP)
         return
     }
-    if (title.length > 0) {
+    if (title.length > 0 && USE_SCROLL) {
         startScroll(screenText())
         return
     }
+    scrolling = false
     if (status == "play") {
         scrolling = false
         drawRows(ROW_NOTE)
@@ -514,12 +536,15 @@ function tick() {
     let now = input.runningTime()
 
     let cmd = pollButtons()
-    if (cmd.length > 0) {
+    if (cmd.length > 0 && now - lastSendAt >= SEND_MIN_GAP_MS) {
+        lastSendAt = now
         send(cmd)
-        if (cmd == "PAUSE" || cmd == "NEXT" || cmd == "PREV") {
-            beep(true)
-        } else {
-            beep(false)
+        if (USE_BEEP) {
+            if (cmd == "PAUSE" || cmd == "NEXT" || cmd == "PREV") {
+                beep(true)
+            } else {
+                beep(false)
+            }
         }
     }
 
@@ -599,12 +624,22 @@ input.onGesture(Gesture.Shake, function () {
     send("QUERY")
 })
 
+// logo 触摸：这块板子的 logo 传感器本来就读不到/会粘住，一旦乱触发
+// 就会疯狂往外发 PAUSE 并叠背景音，很容易把 BLE 撑爆。加两道保险：
+//   1. 去抖 400ms
+//   2. 短时间内触发太多次就判定传感器卡死，直接停用（暂停交给 A+B 短按）
 input.onLogoEvent(TouchButtonEvent.Pressed, function () {
+    if (!USE_LOGO) { return }
     let now = input.runningTime()
     if (now - lastTouchAt < TOUCH_DEBOUNCE_MS) { return }
     lastTouchAt = now
+    touchCount = touchCount + 1
+    if (touchCount > 8) {
+        USE_LOGO = false
+        return
+    }
     send("PAUSE")
-    beep(true)
+    if (USE_BEEP) { beep(true) }
 })
 
 // --- 开机

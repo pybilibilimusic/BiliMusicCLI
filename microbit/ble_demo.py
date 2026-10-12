@@ -172,6 +172,13 @@ async def run(args):
                 await demo.push_state()
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        # 板子崩了/掉线时 write 会抛，这里把现象说清楚再收尾
+        print()
+        print("  *** 链路断了：%s: %s" % (type(exc).__name__, exc))
+        print("      多半是板子崩了或 BLE 断了。看一下板子屏幕：")
+        print("        - 哭脸 + 一串数字 = CODAL 崩溃码，把数字告诉我")
+        print("        - 直接黑屏 = 板子重启了")
 
     try:
         await client.stop_notify(UART_FROM_BOARD)
