@@ -340,7 +340,71 @@ def _check(name, passed, extra=""):
     return passed
 
 
+# --- 后台运行用的几个文件（都在 temp/，已被 gitignore）
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+TEMP_DIR = os.path.join(BASE_DIR, "temp")
+LOG_PATH = os.path.join(TEMP_DIR, "pc_remote.log")
+PID_PATH = os.path.join(TEMP_DIR, "pc_remote.pid")
+STOP_PATH = os.path.join(TEMP_DIR, "pc_remote.stop")
+
+
+def detach_console():
+    """
+    让那个大黑框消失。
+
+    用 FreeConsole（**脱离**控制台）而不是 ShowWindow（**隐藏**窗口）：
+    从 cmd 里启动时，GetConsoleWindow 拿到的是 cmd 自己的窗口，
+    ShowWindow 会把人家的窗口一起藏掉；FreeConsole 只把自己摘出去。
+    脱离之后原来的 stdout 句柄失效，print 会抛 OSError，所以重定向到日志文件。
+    """
+    import ctypes
+    try:
+        ctypes.windll.kernel32.FreeConsole()
+    except Exception:
+        pass
+    try:
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        handle = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+        sys.stdout = handle
+        sys.stderr = handle
+    except Exception:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+        sys.stderr = sys.stdout
+
+
+def write_pid():
+    try:
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        with open(PID_PATH, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+    except Exception:
+        pass
+
+
+def cleanup_files():
+    for path in (PID_PATH, STOP_PATH):
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
+def request_stop():
+    """让后台那个实例自己退出（它每秒检查一次这个文件）。"""
+    try:
+        os.makedirs(TEMP_DIR, exist_ok=True)
+        with open(STOP_PATH, "w", encoding="utf-8") as handle:
+            handle.write("stop")
+        print("已通知后台的 pc_remote 退出（它一秒内会自己收尾）。")
+        return 0
+    except Exception as exc:
+        print("写停止标记失败：%r" % (exc,))
+        return 1
+
+
 def run_live(monitor):
+    from microbit_bridge_ble import RESCAN_INTERVAL      # 只在这里 import：dry-run 不需要 bleak
+
     holder = {}
     sender = KeySender(enabled=not monitor)
     remote = ClassroomRemote(bridge=None, sender=sender, monitor=monitor)
@@ -363,21 +427,38 @@ def run_live(monitor):
     print("=" * 66)
     if remote._volume is None:
         print("提示：读不到系统音量（没装 pycaw），音量回显只报方向、不报数字。")
-    print("正在找板子 ...")
+    print("找板子中 ...（扫不到也不会退出，每 %d 秒再找一次）" % int(RESCAN_INTERVAL))
 
-    if not bridge.start():
-        print("没连上。按一下板子背面的 RESET 再试。")
-        return 1
+    bridge.start()
 
-    print("连上了。板子屏幕应该出对勾。Ctrl+C 退出。\n")
+    print("=" * 66)
+    print("已经在后台跑着了。退出方式：")
+    print("  1) 另开一个终端跑  python pc_remote.py --stop")
+    print("  2) 有控制台时直接 Ctrl+C")
+    print("=" * 66)
+
+    last_report = 0.0
     try:
         while True:
             time.sleep(1)
+            if os.path.exists(STOP_PATH):
+                print("收到停止标记，收尾中 ...")
+                break
+            # 每分钟在日志里记一句，方便事后确认它确实还活着、有没有连上
+            if time.time() - last_report >= 60:
+                last_report = time.time()
+                print("心跳：%s" % ("已连板子" if bridge.connected
+                                    else "还没连上，仍在等待"))
     except KeyboardInterrupt:
         print("\n退出中 ...")
+    except Exception as exc:
+        # 主循环不能因为一次意外就死掉，记下来继续等
+        print("主循环出错：%r（继续等板子）" % (exc,))
+        time.sleep(5)
     finally:
         bridge.stop()
         sender.release_all()      # 保险：把可能还按着的 Alt 松开
+        cleanup_files()
     return 0
 
 
@@ -387,11 +468,20 @@ if __name__ == "__main__":
                         help="离线自检，不连板子不按键")
     parser.add_argument("--monitor", action="store_true",
                         help="连板子但只打印，不真的按键")
+    parser.add_argument("--hide", action="store_true",
+                        help="隐藏控制台窗口（脱离控制台，输出转写 temp/pc_remote.log）")
+    parser.add_argument("--stop", action="store_true",
+                        help="通知后台那个实例优雅退出（不是强杀）")
     args = parser.parse_args()
 
     if args.dry_run:
         sys.exit(run_dry())
+    if args.stop:
+        sys.exit(request_stop())
     if sys.platform != "win32" and not args.monitor:
         print("按键模拟只在 Windows 上可用；其它系统请用 --dry-run 或 --monitor")
         sys.exit(1)
+    if args.hide:
+        detach_console()
+    write_pid()
     sys.exit(run_live(monitor=args.monitor))

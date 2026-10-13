@@ -41,7 +41,9 @@ CHUNK = 19          # 板子的 BLE 缓冲只有 20 字节，留 1 给换行
 CHUNK_GAP = 0.02    # 分片之间喘口气，连着猛写会把板上协议栈写崩（崩溃码 070）
 DEFAULT_SCAN_SECONDS = 10.0
 CONNECT_WAIT_EXTRA = 20.0
-RECONNECT_INTERVAL = 5.0   # 掉线/连不上之后隔多久再试（静默重试，不刷屏）
+RECONNECT_INTERVAL = 5.0   # 扫到了但连不上 -> 隔多久再试（静默重试，不刷屏）
+RESCAN_INTERVAL = 30.0     # 根本扫不到（板子关机/拔电池）-> 隔多久重新扫一次
+                           # ⚠️ 板子随时会被关掉，所以这里是**永远重试**，不是试几次就放弃
 
 
 def _tb() -> str:
@@ -67,6 +69,7 @@ class MicrobitBleBridge(MicrobitBridge):
         self._outbox: "queue.Queue[str]" = queue.Queue()
         self._rx_buffer = ""
         self._linked = False
+        self._missing = False        # 当前是不是"找不到板子"状态（用来只在状态变化时说一句）
 
     # ---------- 生命周期 ----------
 
@@ -188,26 +191,35 @@ class MicrobitBleBridge(MicrobitBridge):
             self._log("micro:bit BLE: 没装 bleak（pip install bleak）")
             return
 
-        dev = await self._find_board(BleakScanner)
-        if dev is None:
-            self._log("micro:bit BLE: 没扫到板子（板子通电了吗？固件是 MakeCode 吗？）")
-            return
-
-        # 板子偶发连不上（WinRT 侧常见 "Unreachable"），而且掉线也是常态 ——
-        # 所以在 _running 期间一直重连，不达成就安静等着，别刷屏打扰用户。
-        attempt = 0
+        # ⭐ 板子随时会被关机/拔电池（教室场景就是随手开关），所以这里**永不退出**：
+        #    扫不到 -> 等 RESCAN_INTERVAL 再扫；扫到了连不上 -> 回去重新扫。
+        #    只在"状态变化"时说一句话，别每秒刷屏。
+        fails = 0
         while self._running:
-            attempt += 1
+            dev = await self._find_board(BleakScanner)
+            if dev is None:
+                if not self._missing:
+                    self._missing = True
+                    self._log("micro:bit BLE：没扫到板子（通电了吗？每 %d 秒再找一次）"
+                              % int(RESCAN_INTERVAL))
+                await asyncio.sleep(RESCAN_INTERVAL)
+                continue
+
             try:
                 await self._connect_and_serve(BleakClient, dev)
-                if not self._running:
-                    return
+                fails = 0
+                if self._missing:
+                    self._missing = False
+                    self._log("micro:bit BLE：板子回来了")
             except Exception as exc:
-                self._debug("connect failed #%d: %r\n%s"
-                            % (attempt, exc, _tb()))
-            if attempt == 1:
-                # 第一次失败才告诉用户一声，后面的重试都静默
-                self._log("micro:bit 还没连上（还在重试）")
+                fails += 1
+                self._debug("connect failed #%d: %r\n%s" % (fails, exc, _tb()))
+                if fails == 1:
+                    # 第一次失败才告诉用户一声，后面的重试都静默
+                    self._log("micro:bit 还没连上（还在重试）")
+
+            if not self._running:
+                return
             await asyncio.sleep(RECONNECT_INTERVAL)
 
     async def _connect_and_serve(self, client_cls, dev):
