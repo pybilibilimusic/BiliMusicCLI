@@ -400,6 +400,27 @@ DTR/RTS 四种组合、在接收位流里直接搜 `PING:uart` 的原始比特
 - ⚠️ 没做、也不打算做：**隐藏进程/开机自启**这类躲藏。教室公用电脑上跑，
   建议跟老师或管理员说一声 —— 这是协助工具，不是监控。
 
+### 独立包（2026-10-13）
+`program.7z`（14.8 KB，项目根目录）= 最小可运行集：
+`pc_remote.py` + `microbit/microbit_bridge.py` + `microbit/microbit_bridge_ble.py`
++ `requirements.txt`(只有 bleak) + `README.txt`。
+⚠️ 打包时**必须保留 `microbit/` 这层目录** —— pc_remote 靠
+`sys.path.insert(<base>/microbit)` 找桥，平铺就 import 不到。
+验证：解压出来单独跑 `--dry-run` 全过。
+
+---
+
+## 项目体积（2026-10-13 查清，等他拍板）
+
+| 东西 | 体积 | 能不能动 |
+|---|---|---|
+| `.git` | **83M** | ⚠️ 大头是 `runtime_libraries.zip`（75.2 MB，make_runtime_pack.py 生成的运行时包）被提交进了历史；还有 `microbit_remote.hex` 1.9M × 7 次。清掉要 filter-repo/BFG + **force push（重写 commit hash）** |
+| `bin/libmpv-2.dll` | 113M | 播放必需，别动 |
+| `ffmpeg.exe` | 97M | 转码必需，别动 |
+| `.venv` | 1.2G | gitignore 的，重建成本高，别动 |
+| `backup/` | 9.1M | 其中 10-08 的 round12/13/14 占 7.7M（MakeCode 迁移前的老备份），可压成一个 7z |
+| `m4s_temp` / `__pycache__` / `mp3` / `temp` | — | 已清（在"可直接清理"白名单里） |
+
 ---
 
 ## 已知的坑（踩过就别再踩）
