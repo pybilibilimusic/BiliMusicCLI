@@ -107,31 +107,38 @@ class KeySender:
         self.log = []
 
     def _event(self, vk, flags):
-        self.log.append((KEY_NAMES.get(vk, hex(vk)), "up" if flags else "down"))
+        event = (KEY_NAMES.get(vk, hex(vk)), "up" if flags else "down")
+        self.log.append(event)
+        if len(self.log) > 200:             # 长时间挂着别把日志撑爆
+            del self.log[:100]
         if not self.enabled:
-            return
+            return event
         import ctypes
         ctypes.windll.user32.keybd_event(vk, 0, flags, 0)
+        return event
 
     def run(self, steps):
+        """执行一串按键，**返回本次实际做了什么**（给回显用，不能拿全局日志凑）。"""
+        events = []
         held = []
         try:
             for kind, vk in steps:
                 if kind == DOWN:
                     held.append(vk)
-                    self._event(vk, 0)
+                    events.append(self._event(vk, 0))
                 elif kind == UP:
-                    self._event(vk, 2)
+                    events.append(self._event(vk, 2))
                     if vk in held:
                         held.remove(vk)
                 else:                       # TAP
-                    self._event(vk, 0)
-                    self._event(vk, 2)
+                    events.append(self._event(vk, 0))
+                    events.append(self._event(vk, 2))
         finally:
             # 中途出任何岔子都要把修饰键松开，否则 Alt 卡住，
             # 之后所有按键都变成菜单快捷键，看着像电脑中邪了
             for vk in reversed(held):
-                self._event(vk, 2)
+                events.append(self._event(vk, 2))
+        return events
 
     def release_all(self):
         for vk in (VK_MENU, VK_TAB, VK_ESCAPE):
@@ -206,17 +213,18 @@ class ClassroomRemote:
             return
         echo, build = entry
         self._counter += 1
-        self.sender.run(build())
+        events = self.sender.run(build())
         # 带上序号：同样的文本板子不会重滚，没有序号连按两次就看不出反应
         self.bridge.send_title("%s %d" % (echo, self._counter))
-        print("  %-6s -> %-10s %s" % (command, echo, self._describe()))
+        print("  %-6s -> %-10s %s" % (command, echo, self._describe(events)))
 
     def adjust_volume(self, delta):
         vk = VK_VOLUME_UP if delta > 0 else VK_VOLUME_DOWN
-        self.sender.run(_tap(vk, VOLUME_TAPS))
+        events = self.sender.run(_tap(vk, VOLUME_TAPS))
         self._counter += 1
-        print("  %-6s -> %s%+d" % ("VOLUP" if delta > 0 else "VOLDOWN",
-                                   "音量", delta))
+        up = delta > 0
+        print("  %-6s -> %-10s %s" % ("VOLUP" if up else "VOLDOWN",
+                                      "音量%+d" % delta, self._describe(events)))
         if self._volume is None:
             # 读不到真实音量就只报方向，别编一个数字出来骗人
             self.bridge.send_title("VOL %s%d %d" % ("+" if delta > 0 else "-",
@@ -226,8 +234,12 @@ class ClassroomRemote:
         self.bridge.send_volume(self._volume)
         print("          回显 VOL:%d" % self._volume)
 
-    def _describe(self):
-        return " ".join("%s(%s)" % (name, act) for name, act in self.sender.log[-4:])
+    def _describe(self, events, limit=6):
+        shown = events[:limit]
+        text = " ".join("%s(%s)" % (name, act) for name, act in shown)
+        if len(events) > limit:
+            text += " ...共%d下" % len(events)
+        return text
 
     def get_state(self):
         """keepalive 用的状态。教室场景没有歌名，给个固定的就绪态就行。"""

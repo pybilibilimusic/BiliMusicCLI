@@ -98,6 +98,23 @@ def clamp_volume(value: int) -> int:
     return max(0, min(100, int(value)))
 
 
+def format_time(value) -> str:
+    """
+    把进度值格式化成板子能显示的文本；拿不到就是 "?"。
+
+    ⚠️ 必须能接受上一次格式化出来的 "?"：send_state() 会把 _last_state 里
+    存的值原样喂回来，而那里存的是**格式化后的字符串**，不是数字。
+    2026-10-13 教室遥控第一次上真机就崩在这儿（int("?") -> ValueError），
+    而且崩在 BLE 的 notify 回调里，表现是"连上了但板子一直重发握手"。
+    """
+    if value is None or value == "?":
+        return "?"
+    try:
+        return f"{int(value)}"
+    except (TypeError, ValueError):
+        return "?"
+
+
 class MicrobitBridge:
     """
     主机侧的串口桥接。
@@ -202,9 +219,9 @@ class MicrobitBridge:
         self._write(f"TITLE:{safe}")
 
     def send_time(self, position, duration):
-        """进度：两个参数都可以是 None（比如流媒体拿不到总时长）。"""
-        pos = f"{int(position)}" if position is not None else "?"
-        dur = f"{int(duration)}" if duration is not None else "?"
+        """进度：两个参数都可以是 None（也可以上一次格式化出来的 "?"）。"""
+        pos = format_time(position)
+        dur = format_time(duration)
         self._last_state["time"] = (pos, dur)
         self._write(f"TIME:{pos}/{dur}")
 
@@ -222,8 +239,8 @@ class MicrobitBridge:
         position, duration = state.get("time", (None, None))
 
         if compact:
-            pos = f"{int(position)}" if position is not None else "?"
-            dur = f"{int(duration)}" if duration is not None else "?"
+            pos = format_time(position)
+            dur = format_time(duration)
             self._last_state.update({"status": status, "volume": volume,
                                      "time": (pos, dur)})
             self._write(f"STATE:{status}|{volume}|{pos}/{dur}")
