@@ -45,6 +45,12 @@ RECONNECT_INTERVAL = 5.0   # 扫到了但连不上 -> 隔多久再试（静默�
 RESCAN_INTERVAL = 30.0     # 根本扫不到（板子关机/拔电池）-> 隔多久重新扫一次
                            # ⚠️ 板子随时会被关掉，所以这里是**永远重试**，不是试几次就放弃
 
+# 判定「其实已经断了」的阈值：
+# 板子关机/拔电池/走远时**不会通知主机**，Windows 也要等链路超时才上报，
+# 所以只能自己主动问。写不进去攒够这么多次就算断了。
+MAX_WRITE_FAILURES = 3
+MAX_PENDING = 50           # 待发报文上限，超了就丢（攒着说明链路已经不对了）
+
 
 def _tb() -> str:
     """取当前异常堆栈。独立出来是因为只有调试时才需要。"""
@@ -70,6 +76,7 @@ class MicrobitBleBridge(MicrobitBridge):
         self._rx_buffer = ""
         self._linked = False
         self._missing = False        # 当前是不是"找不到板子"状态（用来只在状态变化时说一句）
+        self._write_failures = 0     # 连续写失败次数（攒够就判定断线）
 
     # ---------- 生命周期 ----------
 
@@ -120,6 +127,10 @@ class MicrobitBleBridge(MicrobitBridge):
     def _write(self, payload: str) -> bool:
         """只入队，真正发送在后台循环里做。"""
         if not self._linked:
+            return False
+        if self._outbox.qsize() >= MAX_PENDING:
+            # 攒这么多还没发出去，说明链路已经不对劲了。
+            # 丢掉比攒着安全 —— 重连成功后会重新推一份最新状态。
             return False
         self._outbox.put(payload)
         return True
@@ -227,14 +238,30 @@ class MicrobitBleBridge(MicrobitBridge):
             async with client_cls(dev) as client:
                 self._client = client
                 await client.start_notify(UART_FROM_BOARD, self._on_notify)
+                self._drop_outbox()          # 上次失联攒下的旧报文别带过来
                 self._linked = True
+                self._write_failures = 0
                 self._ready.set()
                 self._log("connected on BLE (%s)" % getattr(dev, "address", "?"))
 
                 last_keepalive = time.time()
                 while self._running:
                     await asyncio.sleep(0.1)
+
+                    # ⭐ 谎报军情的根源就在这儿：板子断电/走远时**不会发断开通知**，
+                    #    不主动问的话 _linked 会一直挂着 True，心跳就一直说「已连板子」。
+                    #    is_connected 由 Windows 的 GATT 层维护，链路超时后会变 False。
+                    if not client.is_connected:
+                        raise ConnectionError("BLE 连接断了（板子关机、拔电池或超出范围）")
+
                     await self._drain_outbox()
+
+                    # 链路断了之后 is_connected 可能还要过一阵才翻脸，
+                    # 写不进去是更早也更实在的信号。
+                    if self._write_failures >= MAX_WRITE_FAILURES:
+                        raise ConnectionError(
+                            "连续 %d 次写不进板子，判定已断线" % self._write_failures)
+
                     if time.time() - last_keepalive > _KEEPALIVE_INTERVAL:
                         last_keepalive = time.time()
                         self.send_state()
@@ -247,6 +274,7 @@ class MicrobitBleBridge(MicrobitBridge):
         finally:
             self._linked = False
             self._client = None
+            self._drop_outbox()
             self._ready.set()      # 免得 start() 一直等到超时
 
     async def _async_stop(self):
@@ -299,20 +327,39 @@ class MicrobitBleBridge(MicrobitBridge):
                 return
             await self._send_line(line)
 
-    async def _send_line(self, line: str):
-        """板子的 BLE 缓冲只有 20 字节，长了必须分片。"""
+    def _drop_outbox(self):
+        """
+        把待发报文清光。
+
+        失联期间（板子关机那几分钟）keepalive 还在一直往队列里塞 STATE，
+        不清的话重连成功那一刻会一次性喷出去几十条，板子 20 字节的缓冲
+        直接被写崩（崩溃码 070）。丢了没关系，重连后会重新推最新状态。
+        """
+        try:
+            while True:
+                self._outbox.get_nowait()
+        except queue.Empty:
+            pass
+
+    async def _send_line(self, line: str) -> bool:
+        """板子的 BLE 缓冲只有 20 字节，长了必须分片。返回有没有写进去。"""
         if self._client is None:
-            return
+            return False
         payload = (line + "\n").encode("utf-8", "replace")
         try:
             for i in range(0, len(payload), CHUNK):
                 await self._client.write_gatt_char(UART_TO_BOARD,
                                                    payload[i:i + CHUNK],
                                                    response=False)
-                if len(payload) > CHUNK:
-                    await asyncio.sleep(CHUNK_GAP)
+            if len(payload) > CHUNK:
+                await asyncio.sleep(CHUNK_GAP)
+            self._write_failures = 0
+            return True
         except Exception as exc:
             self._debug("BLE write failed: %r" % (exc,))
+            # ⚠️ 以前只打日志不上报，外层循环就一直以为还连着 —— 谎报军情的另一半。
+            self._write_failures += 1
+            return False
 
     # ---------- 接收（BLE 线程调用） ----------
 

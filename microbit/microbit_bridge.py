@@ -145,6 +145,7 @@ class MicrobitBridge:
         self._write_lock = threading.Lock()
         self._running = False
         self._last_state = {}                   # 缓存最近一次状态，供 keepalive 重发
+        self._last_rx_at = None                 # 最后一次收到板子报文的时刻
 
     # ---------- 生命周期 ----------
 
@@ -284,8 +285,20 @@ class MicrobitBridge:
                 pass
             self._serial = None
 
+    def last_rx_age(self):
+        """
+        距离上一次收到板子报文过了多少秒；从没收过就返回 None。
+
+        ⚠️ 别拿它当断线判据 —— 板子只在握手和按键时说话，待机几分钟
+        一言不全是正常的。它只是给你一个「板子最近有没有动静」的参考。
+        """
+        if not self._last_rx_at:
+            return None
+        return time.time() - self._last_rx_at
+
     def handle_line(self, line: str):
         """解析板子发来的一条指令。独立出来是为了能脱离硬件直接测。"""
+        self._last_rx_at = time.time()
         command, _, argument = line.partition(":")
         command = command.strip().upper()
         argument = argument.strip()

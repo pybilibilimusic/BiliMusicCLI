@@ -447,8 +447,13 @@ def run_live(monitor):
             # 每分钟在日志里记一句，方便事后确认它确实还活着、有没有连上
             if time.time() - last_report >= 60:
                 last_report = time.time()
-                print("心跳：%s" % ("已连板子" if bridge.connected
-                                    else "还没连上，仍在等待"))
+                if bridge.connected:
+                    age = bridge.last_rx_age()
+                    # 待机时板子本来就不说话，所以只报「多久没动静」，不报「失联」
+                    tail = "" if age is None else "（%.0f 秒没收到板子消息）" % age
+                    print("心跳：已连板子%s" % tail)
+                else:
+                    print("心跳：没连上，仍在等板子")
     except KeyboardInterrupt:
         print("\n退出中 ...")
     except Exception as exc:
