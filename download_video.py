@@ -11,7 +11,7 @@ import requests
 
 import config
 import downloading
-from generate_params import sign_params
+from generate_params import refresh_wbi_keys, sign_params
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -97,8 +97,7 @@ class VideoDownloader:
         Returns:
             dict: {'video': [...], 'audio': [...]}
         """
-        # 参与签名的参数必须与最终发送的参数完全一致，否则 w_rid 校验不通过
-        params = sign_params({
+        base = {
             'avid': aid,
             'cid': cid,
             'qn': quality,
@@ -106,19 +105,27 @@ class VideoDownloader:
             'fnver': 0,
             'fourk': 1,
             'platform': 'pc',
-        })
+        }
 
-        resp = requests.get(
-            "https://api.bilibili.com/x/player/wbi/playurl",
-            params=params,
-            headers=self._headers(f"https://www.bilibili.com/video/av{aid}"),
-            cookies=self.cookie_dict,
-            verify=False,
-            timeout=15
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        if payload.get('code') != 0:
+        # 参与签名的参数必须与最终发送的参数完全一致，否则 w_rid 校验不通过。
+        # 失败一次就重拉密钥再试：本地缓存里那把可能已经轮换掉了。
+        payload = None
+        for attempt in range(2):
+            params = sign_params(base)
+            resp = requests.get(
+                "https://api.bilibili.com/x/player/wbi/playurl",
+                params=params,
+                headers=self._headers(f"https://www.bilibili.com/video/av{aid}"),
+                cookies=self.cookie_dict,
+                verify=False,
+                timeout=15
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if payload.get('code') == 0:
+                break
+            if attempt == 0 and refresh_wbi_keys(timeout=15):
+                continue
             raise RuntimeError(
                 f"playurl 接口返回异常: {payload.get('code')} {payload.get('message')}"
             )

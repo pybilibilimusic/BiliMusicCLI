@@ -15,8 +15,8 @@ import config
 import downloading
 import title_cleaner
 import utils
-from generate_params import FALLBACK_KEYS, fallback_warning, refresh_wbi_keys, \
-    set_keys, sign_params, using_fallback
+from generate_params import fallback_warning, refresh_wbi_keys, \
+    sign_params, using_fallback
 
 
 class DownloadAudio:
@@ -93,17 +93,11 @@ class DownloadAudio:
         payload = self._request_playurl(base_params, referer)
 
         if payload.get("code") != 0:
-            # 多半是密钥过期，强制刷新后再试一次
-            refresh_wbi_keys(timeout=self.timeout)
-            payload = self._request_playurl(base_params, referer)
-
-        if payload.get("code") != 0:
-            # 还是不行就依次退化到内置的历史密钥，谁通过就用谁
-            for candidate in FALLBACK_KEYS:
-                set_keys(candidate)
+            # 多半是密钥轮换（本地缓存里那把是旧的），强制重拉一次再试。
+            # 以前这里还会逐个试 FALLBACK_KEYS —— 但列表里只有一组、且跟接口
+            # 返回的完全一样，等于拿同一把钥匙再开一次门，纯浪费，去掉了。
+            if refresh_wbi_keys(timeout=self.timeout):
                 payload = self._request_playurl(base_params, referer)
-                if payload.get("code") == 0:
-                    break
 
         if payload.get("code") == 0 and using_fallback():
             print(fallback_warning())

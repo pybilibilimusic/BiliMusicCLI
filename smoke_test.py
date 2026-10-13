@@ -345,6 +345,10 @@ def test_generate_params():
     keys = generate_params.get_wbi_keys()
     assert_true(len(keys) == 2 and all(keys), "密钥获取失败")
     fallback = generate_params.using_fallback()
+
+    # 拿到密钥后必须落到本地缓存 —— 下次启动就不用为它发一次网络请求了
+    cached, _saved_at = generate_params._read_cache()
+    assert_true(bool(cached), "取到密钥后本地缓存没写进去")
     import hashlib
     import urllib.parse
 
@@ -360,8 +364,7 @@ def test_generate_params():
     assert_true(expected == signed["w_rid"], "独立复算的签名与 sign_params 不一致")
 
     ok = generate_params.probe(keys)
-    source = "兜底值" if fallback else "nav 接口"
-    return f"来源={source}，自检验活={'通过' if ok else '失败'}"
+    return f"来源={generate_params.source()}，自检验活={'通过' if ok else '失败'}"
 
 
 # ------------------------------------------------------------------

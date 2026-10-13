@@ -9,9 +9,16 @@ B 站 WBI 签名（w_rid）工具。
 
 要点：参与签名的参数必须等于实际发送的全部参数（w_rid 自身除外），
 只签一部分会导致服务端校验不通过。密钥会轮换，因此动态获取并带兜底值。
+
+2026-10-13 调整：密钥长期稳定（实测一年没变），没必要每次进程启动都现拉
+（89ms；网络不稳时还要重试一次，最坏能卡 20 秒）。改成**本地缓存 + TTL**：
+正常跑只读一个文件、不联网，过期才去 nav 取。轮换后靠两条路自愈：
+TTL 到期自动刷新，或签名被拒时 refresh_wbi_keys() 强制重拉。
 """
 
 import hashlib
+import json
+import os
 import time
 import urllib.parse
 from typing import Dict, Optional, Tuple
@@ -31,6 +38,13 @@ MIXIN_KEY_ENC_TAB = [
 NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 PLAYURL = "https://api.bilibili.com/x/player/wbi/playurl"
 
+# 密钥的本地缓存。temp/ 已被 gitignore，写不进去也不影响主流程（最多重新拉一次）。
+CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "temp", "wbi_keys.json")
+CACHE_TTL = 7 * 24 * 3600       # 7 天：够长到几乎不用联网，够短到轮换后能自己跟上
+NAV_TIMEOUT = 5                 # 取密钥最多等 5 秒 —— 它失败就用缓存/兜底，
+                                # 没必要在"下第一首歌"的关键路径上替它等 10 秒
+
 # 用于密钥自检的样本视频（长期存在的经典投稿）
 PROBE_BVID = "BV1GJ411x7h7"
 
@@ -46,9 +60,44 @@ FALLBACK_KEYS = (
 )
 
 _keys_cache: Optional[Tuple[str, str]] = None
-_using_fallback = False          # 当前是否在使用兜底密钥
-_fallback_index = 0              # 当前试到第几组兜底
+_using_fallback = False          # 当前是否在使用兜底密钥（本地缓存的旧值 / 内置值）
 _last_error = ""                 # 最近一次取密钥失败的原因（给排查用）
+_keys_source = ""                # nav / cache / fallback，只用于排查和自检显示
+
+
+# ---------- 本地缓存 ----------
+
+def _read_cache() -> Tuple[Optional[Tuple[str, str]], float]:
+    """读本地缓存，返回 (密钥, 存入时刻)。没有或坏了就 (None, 0)。"""
+    try:
+        with open(CACHE_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        img_key, sub_key = data.get("img_key"), data.get("sub_key")
+        if not (isinstance(img_key, str) and isinstance(sub_key, str)
+                and img_key and sub_key):
+            return None, 0.0
+        return (img_key, sub_key), float(data.get("fetched_at") or 0.0)
+    except Exception:
+        return None, 0.0
+
+
+def _write_cache(keys: Tuple[str, str]) -> None:
+    """写本地缓存。写失败无所谓，最多下次重新拉一次。"""
+    try:
+        os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+        with open(CACHE_PATH, "w", encoding="utf-8") as handle:
+            json.dump({"img_key": keys[0], "sub_key": keys[1],
+                       "fetched_at": time.time()}, handle)
+    except Exception:
+        pass
+
+
+def _clear_cache() -> None:
+    """强制重拉前丢掉缓存，免得又拿到同一把旧钥匙。"""
+    try:
+        os.remove(CACHE_PATH)
+    except Exception:
+        pass
 
 
 def _fetch_keys(timeout: int, gzip_only: bool = False) -> Tuple[Optional[Tuple[str, str]], str]:
@@ -89,45 +138,71 @@ def _fetch_keys(timeout: int, gzip_only: bool = False) -> Tuple[Optional[Tuple[s
     return None, "wbi_img 字段是空的"
 
 
-def get_wbi_keys(force_refresh: bool = False, timeout: int = 10) -> Tuple[str, str]:
-    """获取 (img_key, sub_key)，优先走接口并缓存，失败则用兜底值。"""
-    global _keys_cache, _using_fallback, _last_error
+def get_wbi_keys(force_refresh: bool = False, timeout: int = NAV_TIMEOUT) -> Tuple[str, str]:
+    """
+    获取 (img_key, sub_key)。顺序：本地缓存 -> nav 接口 -> 过期缓存 -> 内置兜底。
+
+    正常情况只走第一步（读文件，不联网）。只有缓存过期或不存在才打 nav。
+    """
+    global _keys_cache, _using_fallback, _last_error, _keys_source
     if _keys_cache and not force_refresh:
         return _keys_cache
 
-    keys, err = _fetch_keys(timeout)
+    # 1) 本地缓存，没过期就直接用
+    if not force_refresh:
+        cached, saved_at = _read_cache()
+        if cached and time.time() - saved_at < CACHE_TTL:
+            _keys_cache = cached
+            _using_fallback = False
+            _last_error = ""
+            _keys_source = "cache"
+            return _keys_cache
+
+    # 2) 打 nav。超时按 NAV_TIMEOUT 封顶 —— 取密钥不值得等那么久，
+    #    真的超时就走下面的缓存/兜底，别卡住整个下载。
+    limit = max(1, min(int(timeout or NAV_TIMEOUT), NAV_TIMEOUT))
+    keys, err = _fetch_keys(limit)
+    if not keys:
+        # 第一把没成 —— 最常见的就是响应没解开（br/zstd 缺解压库）。
+        # 退成只收 gzip 再试一次，这一把能自愈绝大多数情况。
+        keys, err2 = _fetch_keys(limit, gzip_only=True)
+        err = err2 or err
+
     if keys:
+        _write_cache(keys)
         _keys_cache = keys
         _using_fallback = False
         _last_error = ""
+        _keys_source = "nav"
         return _keys_cache
 
-    # 第一把没成 —— 最常见的就是响应没解开（br/zstd 缺解压库）。
-    # 退成只收 gzip 再试一次，这一把能自愈绝大多数情况。
-    keys, err2 = _fetch_keys(timeout, gzip_only=True)
-    if keys:
-        _keys_cache = keys
-        _using_fallback = False
-        _last_error = ""
+    # 3) 网络取不到：先用本地那份（哪怕过期），再不行才用内置的
+    cached, saved_at = _read_cache()
+    if cached:
+        _keys_cache = cached
+        _using_fallback = True
+        _last_error = ("nav 取不到（%s），用的是 %.1f 天前的本地缓存"
+                       % (err, (time.time() - saved_at) / 86400.0))
+        _keys_source = "cache-stale"
         return _keys_cache
 
-    _last_error = err2 or err or "未知原因"
+    _last_error = err or "未知原因"
     _using_fallback = True
-    if _keys_cache:
-        return _keys_cache
+    _keys_source = "fallback"
     return FALLBACK_KEYS[0]
 
 
-def set_keys(keys: Tuple[str, str]) -> None:
-    """手动指定密钥（某组兜底验证通过后锁住它，避免重复无效请求）。"""
-    global _keys_cache, _using_fallback
-    _keys_cache = keys
-    _using_fallback = tuple(keys) in [tuple(k) for k in FALLBACK_KEYS]
+def refresh_wbi_keys(timeout: int = NAV_TIMEOUT) -> bool:
+    """
+    签名被拒（如 -403）时调用：丢掉缓存重新拉一把。
 
-
-def refresh_wbi_keys(timeout: int = 10) -> Tuple[str, str]:
-    """签名被拒（如 -403）时调用，强制重新拉取密钥。"""
-    return get_wbi_keys(force_refresh=True, timeout=timeout)
+    返回 True 表示拿到了密钥、值得拿它重试一次请求。
+    ⚠️ 这是"密钥轮换"唯一的自愈入口 —— 本地缓存让"拿到过期钥匙"变成可能，
+    所以这一步比加缓存之前**更重要**，不能省。
+    """
+    _clear_cache()
+    keys = get_wbi_keys(force_refresh=True, timeout=timeout)
+    return bool(keys and all(keys))
 
 
 def using_fallback() -> bool:
@@ -138,6 +213,11 @@ def using_fallback() -> bool:
 def last_error() -> str:
     """上一次取密钥失败的具体原因。空的就说明没失败过。"""
     return _last_error
+
+
+def source() -> str:
+    """这把密钥从哪来的：nav（刚拉的）/ cache（本地没过期）/ fallback（兜底）。"""
+    return _keys_source or ("fallback" if _using_fallback else "cache")
 
 
 def fallback_warning() -> str:
@@ -219,7 +299,6 @@ def sign_params(params: Dict, keys: Tuple[str, str] = None, timeout: int = 10) -
 
 if __name__ == "__main__":
     keys = get_wbi_keys()
-    live = not using_fallback()
-    print("密钥来源：", "nav 接口" if live else "内置兜底值")
+    print("密钥来源：", source())
     print("keys:", keys)
     print("生效验证：", "通过" if probe(keys) else "失败")
