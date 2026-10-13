@@ -123,6 +123,30 @@ class MicrobitBleBridge(MicrobitBridge):
 
     # ---------- 后台线程 ----------
 
+    @staticmethod
+    def _cancel_pending(loop):
+        """
+        关事件循环之前把没跑完的任务收干净。
+
+        不收的话会刷 "Task was destroyed but it is pending!" —— 退出时那句
+        说的就是 stop() 从别的线程调度过来的 _async_stop()：它跟主循环
+        抢着断开连接，主循环先跑完就把循环关了，它还没落地。
+        """
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+        except Exception:
+            return
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        try:
+            # return_exceptions=True：被取消的任务自己会抛 CancelledError，别再往外冒
+            loop.run_until_complete(
+                asyncio.gather(*pending, return_exceptions=True))
+        except Exception:
+            pass
+
     def _thread_main(self):
         # ⚠️ 血泪坑：bleak 的 WinRT 后端要求**多线程套间(MTA)**，
         #    而 Python 新建的线程默认不初始化 COM —— 不写这两行的话
@@ -147,6 +171,7 @@ class MicrobitBleBridge(MicrobitBridge):
         finally:
             try:
                 if self._loop is not None:
+                    self._cancel_pending(self._loop)
                     self._loop.close()
             except Exception:
                 pass
