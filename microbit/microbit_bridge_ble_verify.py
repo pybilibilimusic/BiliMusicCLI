@@ -99,6 +99,100 @@ def t_offline():
           str(b2.fired))
 
 
+class FakeBleClient:
+    """假的 bleak client：不碰蓝牙，能手动把链路「掐断」。"""
+
+    def __init__(self, fail_writes=False):
+        self.is_connected = True
+        self.fail_writes = fail_writes
+        self.written = []
+        self.notify_char = None
+
+    async def start_notify(self, char, callback):
+        self.notify_char = char
+        self.callback = callback
+        return None
+
+    async def write_gatt_char(self, char, data, response=False):
+        if self.fail_writes:
+            raise RuntimeError("模拟：链路断了，写不进去")
+        self.written.append(bytes(data))
+
+
+def _client_class(holder, fail_writes=False):
+    class _Cls:
+        def __init__(self, dev):
+            self.c = FakeBleClient(fail_writes=fail_writes)
+            holder["c"] = self.c
+
+        async def __aenter__(self):
+            return self.c
+
+        async def __aexit__(self, *exc):
+            self.c.is_connected = False
+            return False
+    return _Cls
+
+
+def t_disconnect():
+    """
+    断线检测 —— 「谎报军情」的修复就靠这组。
+
+    板子关机 / 拔电池 / 走远时**不会给主机发断开通知**，Windows 也要等
+    蓝牙链路超时才把 is_connected 翻成 False。以前内层循环压根不问，
+    _linked 就一直挂着 True，心跳于是永远说「已连板子」。
+    """
+    print("\n[4] 离线：断线检测（模拟板子被关掉）")
+    import asyncio
+
+    async def scenario_link_lost():
+        b = MicrobitBleBridge(callbacks={"log": lambda m: None})
+        holder = {}
+        b._running = True                        # 让它真的进内层循环
+        task = asyncio.create_task(
+            b._connect_and_serve(_client_class(holder), None))
+        await asyncio.sleep(0.35)
+        before = b.connected
+        holder["c"].is_connected = False         # 模拟板子关机
+        raised = None
+        try:
+            await asyncio.wait_for(task, timeout=1.0)
+        except Exception as exc:
+            raised = exc
+        b._running = False
+        return before, raised, b.connected, b._outbox.qsize()
+
+    before, raised, after, pending = asyncio.run(scenario_link_lost())
+    check("连着的时候 connected 为 True", before is True, str(before))
+    check("链路断了会抛异常（外层收到才去重连）", raised is not None,
+          repr(raised))
+    check("断线后 connected 变 False —— 不再谎报军情", after is False,
+          str(after))
+    check("失联期间攒的报文会被清掉", pending == 0, str(pending))
+
+    # 另一种断法：链路还「连着」但就是写不进去（板子卡住了）
+    async def scenario_write_fails():
+        b = MicrobitBleBridge(callbacks={"log": lambda m: None})
+        b._running = True
+        task = asyncio.create_task(
+            b._connect_and_serve(_client_class({}, fail_writes=True), None))
+        await asyncio.sleep(0.35)
+        b._linked = True
+        for i in range(8):
+            b._write("TEST:%d" % i)
+        raised = None
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+        except Exception as exc:
+            raised = exc
+        b._running = False
+        return raised, b.connected
+
+    raised, after = asyncio.run(scenario_write_fails())
+    check("连着但写不进去 → 也会抛异常", raised is not None, repr(raised))
+    check("写不进去之后 connected 变 False", after is False, str(after))
+
+
 def t_live(seconds=12.0):
     print("\n[4] 在线：真连一次（%.0f 秒，期间按板子上的键）" % seconds)
     got = []
@@ -136,6 +230,7 @@ def t_live(seconds=12.0):
 def main():
     live = "--live" in sys.argv
     t_offline()
+    t_disconnect()
     if live:
         t_live()
     print()
