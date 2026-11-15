@@ -7,6 +7,7 @@ import re
 from typing import Callable, Optional, List
 from funasr import AutoModel
 from funasr.utils.postprocess_utils import rich_transcription_postprocess
+from model_paths import resolve_model_path
 
 
 class VoiceRecognition:
@@ -75,13 +76,29 @@ class VoiceRecognition:
         self._lock = threading.Lock()
 
     def _load_models(self):
-        """Load FunASR and Silero VAD models."""
+        """Load FunASR and Silero VAD models.
+
+        ⚠️ 必须传**本地缓存的绝对路径**，不能直接写模型 ID。
+        funasr 的 download_from_ms() 判断是
+            if not os.path.exists(model_or_path): -> snapshot_download(...)
+        模型 ID 不是路径，这个判断恒为真，于是每次加载都要连 modelscope
+        校验一遍 revision（两个模型各一次，还会探 100.100.100.200），
+        即使 936MB 的 model.pt 早就下好了。屏幕上的
+        "Downloading Model from https://www.modelscope.cn ..." 是它的固定
+        开场白，并不代表真的在下载。
+        resolve_model_path() 找不到缓存时会原样返回模型 ID，首次运行仍能
+        自动下载；设 BILIMUSIC_MODEL_ONLINE=1 可临时恢复在线校验。
+        """
+        asr_model = resolve_model_path("iic/SenseVoiceSmall")
+        vad_model = resolve_model_path("fsmn-vad")
         print("Loading FunASR model...")
+        if asr_model != "iic/SenseVoiceSmall":
+            print("  (using local cache, skip modelscope online check)")
         self._asr_model = AutoModel(
-            model="iic/SenseVoiceSmall",
+            model=asr_model,
             device=self.device,
             disable_pbar=True,
-            vad_model="fsmn-vad",
+            vad_model=vad_model,
             vad_kwargs={"max_single_segment_time": 30000},
             disable_update=True
         )
