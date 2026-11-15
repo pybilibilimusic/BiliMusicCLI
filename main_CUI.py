@@ -228,6 +228,7 @@ class MainCui:
         self.temp_dir = None
         self.m4s_dir = None
         self.mp3_dir = None
+        self.video_dir = None
         self.log_dir = None
         self.timeout = None
         self.lang_code = 'zh'
@@ -641,6 +642,52 @@ class MainCui:
             except Exception as e:
                 print(self._('download_failed').format(e))
         return downloaded_paths
+
+    def cmd_video(self, args):
+        """
+        下载 B 站视频（DASH 音视频分离流 -> FFmpeg 合并为 MP4）。
+
+        用法：video <URL> [1080p|720p|480p|360p]
+        复用已有的 download_video.VideoDownloader，不新增依赖。
+        """
+        if not args:
+            print(self._('cmd_video_usage'))
+            return []
+
+        url = args[0]
+        quality = args[1].lower() if len(args) > 1 else '1080p'
+        if quality not in config.quality_map:
+            print(self._('video_invalid_quality').format(
+                quality, ', '.join(config.quality_map)))
+            return []
+        if 'bilibili.com/video/' not in url or 'BV' not in url:
+            print(self._('video_invalid_url'))
+            return []
+
+        # 延迟导入：视频下载是少数命令，没必要让每次启动都付 import 成本
+        try:
+            import download_video
+        except ImportError as exc:
+            print(self._('video_module_missing').format(exc))
+            return []
+
+        out_dir = self.video_dir or Path("./video")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        downloader = download_video.VideoDownloader(
+            cookie_file="bilibili_cookies.json",
+            ffmpeg_path="./ffmpeg.exe",
+            threads=self.threads or 1,
+        )
+        try:
+            path = downloader.download(url, output_dir=str(out_dir),
+                                       quality=quality)
+        except Exception as exc:
+            # 合规红线 J：付费 / 大会员 / 权限受限内容接口会直接拒绝，
+            # 这里只提示并跳过，不做任何绕过、不重试、不解析受限内容。
+            print(self._('video_failed').format(exc))
+            return []
+        print(self._('video_success').format(path))
+        return [path]
 
     def cmd_search(self, args):
         """Manually search for a song and play it interactively."""
@@ -1067,6 +1114,8 @@ class MainCui:
         self.temp_dir = Path(self.initial_setup.config.get('paths', 'temporary_save_location', fallback="./temp"))
         self.m4s_dir = Path(self.initial_setup.config.get('paths', 'm4s_temp', fallback="./m4s_temp"))
         self.mp3_dir = Path(self.initial_setup.config.get('paths', 'mp3', fallback="./mp3"))
+        # 视频下载的输出目录；老 config.ini 里没有这一项时用 fallback（B3）
+        self.video_dir = Path(self.initial_setup.config.get('paths', 'video', fallback="./video"))
         self.log_dir = Path(self.initial_setup.config.get('paths', 'logs', fallback="./log"))
         self.timeout = self.initial_setup.config.getint('timeout', 'timeout', fallback=5)
         self.mic_index = self.initial_setup.config.getint('audio', 'input_device_index', fallback=-1)
@@ -1149,6 +1198,8 @@ class MainCui:
                               brief=self._('cmd_help_brief'), usage=self._('cmd_help_usage'))
         self.register_command('download', self.cmd_download,
                               brief=self._('cmd_download_brief'), usage=self._('cmd_download_usage'))
+        self.register_command('video', self.cmd_video,
+                              brief=self._('cmd_video_brief'), usage=self._('cmd_video_usage'))
         self.register_command('voice', self.cmd_voice,
                               brief=self._('cmd_voice_brief'), usage=self._('cmd_voice_usage'))
         self.register_command('cache', self.cmd_cache,

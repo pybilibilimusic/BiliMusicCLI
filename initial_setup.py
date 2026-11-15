@@ -26,10 +26,13 @@ class InitialSetup:
             'temporary_save_location': './temp',   # Directory for temporary files
             'logs': './log',                       # Directory for logs
             'm4s_temp': './m4s_temp',          # Directory for m4s temporary files
-            'mp3': './mp3'                         # Directory for MP3 output
+            'mp3': './mp3',                        # Directory for MP3 output
+            'video': './video',                    # Directory for video download output (B3: new key must be here)
         }
         self.config['timeout'] = {'timeout': '5'}   # Request timeout in seconds
-        self.config['threads'] = {'threads': '4'}   # Number of download threads
+        # PITFALLS C9：多线程分片在本项目是负优化（每分片新建 HTTPS 连接 + TLS
+        # 握手，最后还要合并读写一遍），实测 1 线程最快，所以默认 1。
+        self.config['threads'] = {'threads': '1'}   # Number of download threads
         self.config['audio'] = {'input_device_index': '-1'}  #Default index of microphone
         self.config['microbit'] = {'port': ''}
         # 搜索反馈埋点：默认开着，随时能在 config.ini 里关掉。
@@ -42,7 +45,9 @@ class InitialSetup:
             self.config['paths']['temporary_save_location'],
             self.config['paths']['logs'],
             self.config['paths']['m4s_temp'],
-            self.config['paths']['mp3']
+            self.config['paths']['mp3'],
+            # 老 config.ini 里没有 video 这一项，兜底成默认路径（B3）
+            self.config['paths'].get('video', './video'),
         ]
 
         for dir_path in dirs:
@@ -321,13 +326,16 @@ class InitialSetup:
             self.config['timeout'] = {'timeout': str(timeout)}
 
             # Set number of download threads (1-9)
+            # PITFALLS C9：分片下载在本项目是负优化，1 线程实测最快（1.55 MB/s
+            # vs 4 线程 1.06 MB/s vs 8 线程 0.96 MB/s），所以默认 1。
             threads = self._inquiry(
-                context='Please enter the number of threads when downloading (default:4),\n'
+                context='Please enter the number of threads when downloading (default:1),\n'
                         'The available range is 1 to 9.\n'
-                        'Note: It is not recommended to have more than 5 threads, otherwise it may put a burden on the hard drive.',
+                        'Note: 1 is fastest here. Splitting into multiple ranges means\n'
+                        'an extra HTTPS/TLS handshake per part plus a final merge pass.',
                 valid_value=range(1, 10),
                 target_type=int,
-                default=4
+                default=1
             )
             self.config['threads'] = {'threads': str(threads)}
 
