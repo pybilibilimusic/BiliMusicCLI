@@ -11,6 +11,20 @@ import progress_bar
 import progress_download
 
 
+def avg_speed_mbps(downloaded, total_time):
+    """平均速度（MB/s），total_time 为 0 时返回 0 而不是抛 ZeroDivisionError。
+
+    Windows 上 time.time() 精度约 15.6ms，本机 HTTP 服务器 / 极小文件可能在
+    一个计时滴答内就下完，total_time 会是 0。2026-11-15 冒烟测试里
+    「单线程下载」偶发失败（float division by zero）就是这个原因：
+    异常冒到 download()，文件被当成不完整产物删掉，下载被误判失败。
+    get_speed() 早就有 elapsed > 0.001 的保护，完成时这句漏了。
+    """
+    if not total_time or total_time <= 0:
+        return 0.0
+    return downloaded / total_time / 1024 / 1024
+
+
 class DownloadManager:
     """Download manager supporting resumable downloads and multi-threading"""
 
@@ -223,7 +237,7 @@ class DownloadManager:
         if success and completed == len(ranges):
             if self._merge_parts(part_files, self.output_path):
                 total_time = time.time() - start_time
-                print(f"✓ Download complete! Total time: {total_time:.2f}s, Average speed: {self.downloaded / total_time / 1024 / 1024:.2f} MB/s")
+                print(f"✓ Download complete! Total time: {total_time:.2f}s, Average speed: {avg_speed_mbps(self.downloaded, total_time):.2f} MB/s")
                 return True
             else:
                 return False
@@ -309,7 +323,7 @@ def _original_download(url, output_path, chunk_size=8192, headers=None):
         total_time = time.time() - start_time
         if total_size:
             if downloaded == total_size:
-                print(f"✓ Download complete! Total time: {total_time:.2f}s, Average speed: {downloaded / total_time / 1024 / 1024:.2f} MB/s")
+                print(f"✓ Download complete! Total time: {total_time:.2f}s, Average speed: {avg_speed_mbps(downloaded, total_time):.2f} MB/s")
             else:
                 print(f"⚠ Download completed but size mismatch: expected {total_size:,}, got {downloaded:,}")
         else:
