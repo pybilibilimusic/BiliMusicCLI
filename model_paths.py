@@ -13,10 +13,21 @@
 
   缓存不完整或不存在时原样返回模型 ID —— 首次运行仍能自动下载。
   设 BILIMUSIC_MODEL_ONLINE=1 可强制走原来的在线校验（用于更新模型）。
+
+换模型存放位置（2026-11-15 加）：
+  设 BILIMUSIC_MODEL_DIR=<目录>，本程序优先在那里找模型，支持三种布局：
+      <dir>/<leaf>/                    （直接把两个模型目录拷进去）
+      <dir>/hub/models/iic/<leaf>/    （modelscope 缓存根的层级）
+      <dir>/models/iic/<leaf>/
+  它只管「已有模型的查找」：解析成功后交给 AutoModel 的是绝对路径，
+  funasr 不会再碰 modelscope 缓存。要让**首次下载**也落到别的盘，另外设
+  MODELSCOPE_CACHE=<dir>（modelscope 会自己在下面建 hub/models/iic/...）。
+  两个变量都不设时，行为与原来完全一致（默认 ~/.cache/modelscope）。
 """
 import os
 
 CACHE_ENV = "MODELSCOPE_CACHE"
+MODEL_DIR_ENV = "BILIMUSIC_MODEL_DIR"
 FORCE_ONLINE_ENV = "BILIMUSIC_MODEL_ONLINE"
 
 # 模型 ID -> (modelscope 缓存里的叶子目录名, 必须存在的关键文件)
@@ -33,11 +44,23 @@ def default_cache_iic():
                         "modelscope", "hub", "models", "iic")
 
 
-def candidate_roots(leaf, cache_root=None):
-    """按优先级列出可能的缓存目录。cache_root 供离线测试注入。"""
+def candidate_roots(leaf, cache_root=None, model_dir=None):
+    """按优先级列出可能的模型目录。
+
+    优先级：BILIMUSIC_MODEL_DIR > MODELSCOPE_CACHE > 默认 home 缓存。
+    cache_root / model_dir 都可直接注入，方便离线测试；None 时读环境变量。
+    """
     if cache_root is None:
         cache_root = os.environ.get(CACHE_ENV)
+    if model_dir is None:
+        model_dir = os.environ.get(MODEL_DIR_ENV)
     roots = []
+    if model_dir:
+        # 自定义目录优先：用户显式指定的位置永远赢过自动缓存
+        roots.append(os.path.join(model_dir, leaf))
+        roots.append(os.path.join(model_dir, "hub", "models", "iic", leaf))
+        roots.append(os.path.join(model_dir, "models", "iic", leaf))
+        roots.append(os.path.join(model_dir, "iic", leaf))
     if cache_root:
         # 环境变量既可能指 modelscope 根，也可能直接指 hub/models
         roots.append(os.path.join(cache_root, "hub", "models", "iic", leaf))
@@ -47,7 +70,7 @@ def candidate_roots(leaf, cache_root=None):
     return roots
 
 
-def resolve_model_path(model_id, cache_root=None):
+def resolve_model_path(model_id, cache_root=None, model_dir=None):
     """返回本地绝对路径；缓存不完整/不存在/强制在线时返回原 model_id。"""
     if os.environ.get(FORCE_ONLINE_ENV):
         return model_id
@@ -55,15 +78,15 @@ def resolve_model_path(model_id, cache_root=None):
     if layout is None:
         return model_id
     leaf, marker = layout
-    for root in candidate_roots(leaf, cache_root):
+    for root in candidate_roots(leaf, cache_root, model_dir):
         if os.path.isfile(os.path.join(root, marker)):
             return os.path.abspath(root)
     return model_id
 
 
-def describe(model_id, cache_root=None):
+def describe(model_id, cache_root=None, model_dir=None):
     """给 CLI / 诊断用的一句话说明。"""
-    resolved = resolve_model_path(model_id, cache_root)
+    resolved = resolve_model_path(model_id, cache_root, model_dir)
     if resolved == model_id:
         return "%s -> (在线模式，交给 funasr 下载)" % model_id
     return "%s -> %s [本地]" % (model_id, resolved)

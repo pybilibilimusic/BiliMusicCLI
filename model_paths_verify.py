@@ -52,7 +52,9 @@ def run():
     try:
         # 环境干净，避免用户机器上的真实环境变量影响断言
         clean = {k: v for k, v in os.environ.items()
-                 if k not in (model_paths.CACHE_ENV, model_paths.FORCE_ONLINE_ENV)}
+                 if k not in (model_paths.CACHE_ENV,
+                              model_paths.MODEL_DIR_ENV,
+                              model_paths.FORCE_ONLINE_ENV)}
         # 把「默认 home 缓存」也指向临时区，否则断言「缓存不存在应退回 ID」
         # 时会被用户机器上真实的 936MB 模型缓存命中，测不到退回分支
         with patch.dict(os.environ, clean, clear=True), \
@@ -113,6 +115,58 @@ def run():
                 check("MODELSCOPE_CACHE 层级 %-6s 能命中" % layout,
                       got == os.path.abspath(expected), repr(got))
 
+            # ---- BILIMUSIC_MODEL_DIR：项目级自定义模型位置 ----
+            # 将来加 SSD / 换电脑时，把两个模型目录拷过去 + 设这个变量即可
+            for layout in ("hub", "models", "iic"):
+                r = os.path.join(tmp, "custom_" + layout)
+                expected, _ = make_cache(r, layout=layout)
+                with patch.dict(os.environ, {model_paths.MODEL_DIR_ENV: r}):
+                    got = model_paths.resolve_model_path("iic/SenseVoiceSmall")
+                check("BILIMUSIC_MODEL_DIR 层级 %-6s 能命中" % layout,
+                      got == os.path.abspath(expected), repr(got))
+
+            simple = os.path.join(tmp, "simple_models")
+            os.makedirs(os.path.join(simple, "SenseVoiceSmall"))
+            open(os.path.join(simple, "SenseVoiceSmall", "model.pt"),
+                 "wb").close()
+            simple_asr = os.path.abspath(
+                os.path.join(simple, "SenseVoiceSmall"))
+            with patch.dict(os.environ, {model_paths.MODEL_DIR_ENV: simple}):
+                check("BILIMUSIC_MODEL_DIR 最简布局 <dir>/<leaf> 能命中",
+                      model_paths.resolve_model_path("iic/SenseVoiceSmall")
+                      == simple_asr)
+                check("自定义目录里缺 vad -> 退回模型 ID",
+                      model_paths.resolve_model_path("fsmn-vad") == "fsmn-vad")
+
+            with patch.dict(os.environ, {
+                    model_paths.MODEL_DIR_ENV: simple,
+                    model_paths.CACHE_ENV: root}):
+                check("自定义目录优先于 MODELSCOPE_CACHE",
+                      model_paths.resolve_model_path("iic/SenseVoiceSmall")
+                      == simple_asr)
+
+            empty = os.path.join(tmp, "empty_custom")
+            with patch.dict(os.environ, {
+                    model_paths.MODEL_DIR_ENV: empty,
+                    model_paths.CACHE_ENV: root}):
+                check("自定义目录找不到时回落到 MODELSCOPE_CACHE",
+                      model_paths.resolve_model_path("iic/SenseVoiceSmall")
+                      == os.path.abspath(asr))
+            with patch.dict(os.environ, {model_paths.MODEL_DIR_ENV: empty}):
+                check("自定义目录为空且无缓存 -> 退回模型 ID",
+                      model_paths.resolve_model_path("iic/SenseVoiceSmall")
+                      == "iic/SenseVoiceSmall")
+
+            with patch.dict(os.environ, {
+                    model_paths.MODEL_DIR_ENV: simple,
+                    model_paths.FORCE_ONLINE_ENV: "1"}):
+                check("强制在线时自定义目录也跳过",
+                      model_paths.resolve_model_path("iic/SenseVoiceSmall")
+                      == "iic/SenseVoiceSmall")
+            check("describe() 能显示自定义目录",
+                  simple_asr in model_paths.describe(
+                      "iic/SenseVoiceSmall", model_dir=simple))
+
             # 空目录：不能误判成缓存
             check("缓存目录不存在 -> 退回模型 ID",
                   model_paths.resolve_model_path(
@@ -151,6 +205,12 @@ def demo():
     for mid in ("iic/SenseVoiceSmall", "fsmn-vad"):
         print("  " + model_paths.describe(mid))
     print()
+    print("  BILIMUSIC_MODEL_DIR = %s" % (
+        os.environ.get(model_paths.MODEL_DIR_ENV) or "(未设，用默认缓存)"))
+    print("  MODELSCOPE_CACHE    = %s" % (
+        os.environ.get(model_paths.CACHE_ENV) or "(未设)"))
+    print()
+    print("  换盘：把两个模型目录拷到新位置，设 BILIMUSIC_MODEL_DIR=<新位置>")
     print("  设 BILIMUSIC_MODEL_ONLINE=1 可临时恢复在线校验（更新模型时用）")
     return 0
 
