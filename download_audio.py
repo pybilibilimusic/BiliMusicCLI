@@ -19,6 +19,48 @@ from generate_params import fallback_warning, refresh_wbi_keys, \
     sign_params, using_fallback
 
 
+# B站部分视频的 part（分P标题）是系统生成的占位符，不是真实标题：
+#   studio_video_1730000000 / studio-video-1730000000 / STUDIO_VIDEO1730000000
+# 直接拿它命名会得到一个没意义的文件名。只在命名逻辑里判断并回退，
+# 不改动 B站 API 返回的任何内容（PITFALLS D1 / J）。
+STUDIO_PLACEHOLDER = re.compile(r"studio[-_]video[-_]?\d+", re.IGNORECASE)
+
+
+def is_studio_placeholder(text) -> bool:
+    """text 是不是系统生成的 studio-video-<时间戳> 占位符。"""
+    return bool(text) and bool(STUDIO_PLACEHOLDER.search(str(text)))
+
+
+def resolve_song_filename(title, part, bvid, page=1, multi_part=False) -> str:
+    """
+    由标题 / 分P标题算出文件名主体（**不含扩展名，也还没做非法字符清理**）。
+
+    这是纯函数：不联网、不碰数据库、不碰 API，方便离线回归。
+    非法字符清理仍由调用方用 utils.normalize_filename() 完成，保持原逻辑。
+
+    规则：
+      单P     : 优先 title；title 为空或也是占位符 -> bvid
+      多P     : part 正常 -> 沿用原来的 "title - part"
+                part 是占位符 -> "title_P<序号>"；title 也异常 -> "bvid_P<序号>"
+    """
+    title = (title or "").strip()
+    part = (part or "").strip()
+    bvid = (bvid or "").strip()
+    bad_title = (not title) or is_studio_placeholder(title)
+    base = (bvid if bad_title else title)
+
+    if not multi_part:
+        return base
+
+    if part and not is_studio_placeholder(part):
+        # 普通多P：完全保持原来的命名，不受本次改动影响
+        return f"{base} - {part}" if base else part
+
+    suffix = "_P%s" % page
+    # part 是占位符（或为空）时回退到 标题_P序号 / bvid_P序号
+    return f"{base}{suffix}" if base else suffix.lstrip("_")
+
+
 class DownloadAudio:
     """Main class for downloading audio from Bilibili videos."""
 
@@ -164,7 +206,9 @@ class DownloadAudio:
         # 标题 -> 干净歌名：去【】标签、去引号歌词、去噪声词，失败回退原始标题
         title = title_cleaner.clean_song_title(raw_title)
         part = title_cleaner.clean_song_title(part_title) if part_title else ""
-        filename = f"{title} - {part}" if part and part != title else title
+        # 分P标题可能是 studio-video-<时间戳> 占位符，交给纯函数做回退（D1）
+        filename = resolve_song_filename(
+            title, part, video_id, page=page, multi_part=len(pages) > 1)
         output_path = self.m4s_temp / f"{utils.normalize_filename(filename)}.m4s"
 
         success = downloading.download(
