@@ -1,7 +1,9 @@
 import configparser
 from pathlib import Path
 import threading
-from modelscope import snapshot_download
+# modelscope 故意不在顶层导入：它会连带拉起 torch（实测约 3 秒），
+# 而这里只有首次运行向导的「自定义配置」分支会用到它去后台预下载模型。
+# 挪进 _preload_models()，普通启动不必付这笔成本。
 import logging
 
 import select_file
@@ -102,6 +104,8 @@ class InitialSetup:
     @staticmethod
     def _preload_models():
         try:
+            # 延迟导入（见文件顶部注释）；已在后台线程里，失败也不会影响向导
+            from modelscope import snapshot_download
             logging.getLogger("modelscope").setLevel(logging.WARNING)
             print("Preloading voice models in background (first time takes 1-2 minutes)...")
             snapshot_download('iic/SenseVoiceSmall')

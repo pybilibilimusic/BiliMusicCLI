@@ -23,7 +23,9 @@ import song_search
 import download_audio
 import select_file
 import transform
-from VoiceRecognition import VoiceRecognition
+# VoiceRecognition 故意不在顶层导入：它会连带拉起 funasr + torch，
+# 实测光导入就要 12~32 秒（这块盘是 HDD）。挪到 cmd_voice() 里按需加载，
+# 不用语音命令时这笔启动成本全省。
 import initial_setup
 import lang
 from cache_manager import CacheManager
@@ -425,18 +427,22 @@ class MainCui:
         print(self._('loading_voice_model'))
 
         def run_voice():
-            controller = VoiceRecognition(
-                wake_words=["小爱同学", "播放"],
-                silence_duration=1.5,
-                callback=self.on_voice_detected,
-                callback_stop=self.on_voice_stop,
-                callback_pause=self.on_voice_pause,
-                callback_resume=self.on_voice_resume,
-                callback_next=self.on_voice_next,
-                on_ready=lambda: print(self._('voice_ready')),
-                input_device_index=self.mic_index)
-            self.voice_controller = controller
             try:
+                # 延迟导入（见文件顶部注释）。放进 try：funasr/torch 缺失
+                # 或导入失败时走正常错误提示，而不是子线程甩一串 traceback。
+                from VoiceRecognition import VoiceRecognition
+
+                controller = VoiceRecognition(
+                    wake_words=["小爱同学", "播放"],
+                    silence_duration=1.5,
+                    callback=self.on_voice_detected,
+                    callback_stop=self.on_voice_stop,
+                    callback_pause=self.on_voice_pause,
+                    callback_resume=self.on_voice_resume,
+                    callback_next=self.on_voice_next,
+                    on_ready=lambda: print(self._('voice_ready')),
+                    input_device_index=self.mic_index)
+                self.voice_controller = controller
                 controller.start_monitor()
             except Exception as e:
                 print(self._('voice_recognition_thread_error').format(e))
